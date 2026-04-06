@@ -7,6 +7,8 @@ import { collectNotionExport } from './export-parser.js';
 import { buildSiYuanWritePlan } from './notion-normalizer.js';
 import type { ImportStats, NotionImportReporter, NotionWritePlanDocument, SiYuanWritePlan } from './notion-types.js';
 
+type ImportMode = 'replace' | 'incremental';
+
 const CONCURRENCY = 8;
 
 async function runPool<T>(items: T[], concurrency: number, fn: (item: T) => Promise<void>) {
@@ -21,10 +23,33 @@ async function runPool<T>(items: T[], concurrency: number, fn: (item: T) => Prom
 	await Promise.all(workers);
 }
 
-async function ensureNotebook(client: Client, reporter: NotionImportReporter, notebookName: string) {
+async function getExistingPageTitles(client: Client, notebookId: string): Promise<Set<string>> {
+	const titles = new Set<string>();
+	try {
+		const res = await client.sql({
+			stmt: `SELECT content FROM blocks WHERE box='${notebookId}' AND type='d' AND content != ''`,
+		});
+		if (res?.data) {
+			for (const row of res.data) {
+				if (row.content) {
+					titles.add(row.content.trim());
+				}
+			}
+		}
+	} catch (error) {
+		console.warn('Failed to get existing page titles:', error);
+	}
+	return titles;
+}
+
+async function ensureNotebook(client: Client, reporter: NotionImportReporter, notebookName: string, importMode: ImportMode = 'replace') {
 	const listRes = await client.lsNotebooks({});
 	const existing = listRes?.data?.notebooks?.find((notebook: any) => notebook.name === notebookName);
 	if (existing) {
+		if (importMode === 'incremental') {
+			reporter.log('info', `Using existing notebook: ${notebookName}`);
+			return existing.id as string;
+		}
 		reporter.log('info', `Replacing existing notebook: ${notebookName}`);
 		const removeRes = await client.removeNotebook({ notebook: existing.id as string });
 		if (removeRes.code !== 0) {
@@ -662,7 +687,7 @@ async function rebuildResidualHtmlDocuments(
 	return rebuiltDocuments;
 }
 
-export async function runNotionImport(files: FileList | File[], reporter: NotionImportReporter) {
+export async function runNotionImport(files: FileList | File[], reporter: NotionImportReporter, notebookName: string = 'Notion') {
 	clearSiYuanIDCache();
 	const stats: ImportStats = { docs: 0, attachments: 0, databases: 0, errors: 0 };
 	const client = new Client({});
@@ -682,7 +707,7 @@ export async function runNotionImport(files: FileList | File[], reporter: Notion
 		reporter.log('info', 'Scanning Notion HTML export...');
 
 		const registry = await collectNotionExport(pickedFiles, reporter);
-		const plan = buildSiYuanWritePlan(registry);
+		const plan = buildSiYuanWritePlan(registry, notebookName);
 		reporter.log(
 			'info',
 			`Manifest ready: ${plan.documents.length} HTML document(s), ${plan.attachments.length} attachment(s), ${Object.keys(registry.resolverInfo.csvFileInfos).length} CSV database file(s).`,
