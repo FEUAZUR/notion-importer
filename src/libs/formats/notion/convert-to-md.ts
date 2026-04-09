@@ -455,6 +455,7 @@ export async function readToMarkdown(info: NotionResolverInfo, file: ZipEntryFil
 	preserveTextDirection(body);
 	normalizeLeadingLinkIconSpacing(body);
 	removeNotionPagesSection(body);
+	removeTableOfContentsNav(body);
 
 	// Wrap all heading tags in a div to prevent merging with following elements during conversion
 	const headings = body.querySelectorAll('h1, h2, h3, h4, h5, h6');
@@ -1263,6 +1264,16 @@ function removeNotionPagesSection(body: HTMLElement) {
 		}
 		toRemove.forEach(el => el.remove());
 		break;
+	}
+}
+
+/**
+ * Remove <nav class="table_of_contents"> elements from the body.
+ * These are auto-generated navigation menus in Notion exports and should not be imported.
+ */
+function removeTableOfContentsNav(body: HTMLElement) {
+	for (const nav of Array.from(body.querySelectorAll('nav[class*="table_of_contents"]'))) {
+		nav.remove();
 	}
 }
 
