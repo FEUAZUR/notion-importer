@@ -7,6 +7,8 @@ import { collectNotionExport } from './export-parser.js';
 import { buildSiYuanWritePlan } from './notion-normalizer.js';
 import type { ImportStats, NotionImportReporter, NotionWritePlanDocument, SiYuanWritePlan } from './notion-types.js';
 
+type ImportMode = 'replace' | 'incremental';
+
 const CONCURRENCY = 8;
 
 async function runPool<T>(items: T[], concurrency: number, fn: (item: T) => Promise<void>) {
@@ -21,10 +23,33 @@ async function runPool<T>(items: T[], concurrency: number, fn: (item: T) => Prom
 	await Promise.all(workers);
 }
 
-async function ensureNotebook(client: Client, reporter: NotionImportReporter, notebookName: string) {
+async function getExistingPageTitles(client: Client, notebookId: string): Promise<Set<string>> {
+	const titles = new Set<string>();
+	try {
+		const res = await client.sql({
+			stmt: `SELECT content FROM blocks WHERE box='${notebookId}' AND type='d' AND content != ''`,
+		});
+		if (res?.data) {
+			for (const row of res.data) {
+				if (row.content) {
+					titles.add(row.content.trim());
+				}
+			}
+		}
+	} catch (error) {
+		console.warn('Failed to get existing page titles:', error);
+	}
+	return titles;
+}
+
+async function ensureNotebook(client: Client, reporter: NotionImportReporter, notebookName: string, importMode: ImportMode = 'replace') {
 	const listRes = await client.lsNotebooks({});
 	const existing = listRes?.data?.notebooks?.find((notebook: any) => notebook.name === notebookName);
 	if (existing) {
+		if (importMode === 'incremental') {
+			reporter.log('info', `Using existing notebook: ${notebookName}`);
+			return existing.id as string;
+		}
 		reporter.log('info', `Replacing existing notebook: ${notebookName}`);
 		const removeRes = await client.removeNotebook({ notebook: existing.id as string });
 		if (removeRes.code !== 0) {
@@ -662,7 +687,12 @@ async function rebuildResidualHtmlDocuments(
 	return rebuiltDocuments;
 }
 
-export async function runNotionImport(files: FileList | File[], reporter: NotionImportReporter) {
+export async function runNotionImport(
+	files: FileList | File[],
+	reporter: NotionImportReporter,
+	notebookName: string = 'Notion',
+	importMode: ImportMode = 'replace',
+) {
 	clearSiYuanIDCache();
 	const stats: ImportStats = { docs: 0, attachments: 0, databases: 0, errors: 0 };
 	const client = new Client({});
@@ -682,24 +712,34 @@ export async function runNotionImport(files: FileList | File[], reporter: Notion
 		reporter.log('info', 'Scanning Notion HTML export...');
 
 		const registry = await collectNotionExport(pickedFiles, reporter);
-		const plan = buildSiYuanWritePlan(registry);
+
+		reporter.setPhase('creating');
+		const notebookID = await ensureNotebook(client, reporter, notebookName, importMode);
+
+		let existingTitles: Set<string> | undefined;
+		if (importMode === 'incremental') {
+			const listRes = await client.lsNotebooks({});
+			const existing = listRes?.data?.notebooks?.find((n: any) => n.name === notebookName);
+			if (existing) {
+				existingTitles = await getExistingPageTitles(client, existing.id as string);
+			}
+		}
+
+		const plan = buildSiYuanWritePlan(registry, notebookName, existingTitles);
 		reporter.log(
 			'info',
 			`Manifest ready: ${plan.documents.length} HTML document(s), ${plan.attachments.length} attachment(s), ${Object.keys(registry.resolverInfo.csvFileInfos).length} CSV database file(s).`,
 		);
-
-		reporter.setPhase('creating');
-		const notebookID = await ensureNotebook(client, reporter, plan.notebookName);
 		const parentCount = buildParentCount(plan);
 		totalProgress = plan.documents.length + plan.attachments.length + plan.documents.length + plan.documents.length;
 		currentProgress = 0;
 		reporter.updateProgress(currentProgress, totalProgress);
 
 		for (const document of plan.documents) {
-			reporter.setCurrentItem(document.fileInfo.displayTitle || document.fileInfo.title);
+			reporter.setCurrentItem((document as any).finalTitle || document.fileInfo.displayTitle || document.fileInfo.title);
 			const shouldSkip = !document.fileInfo.hasContent && !parentCount.has(document.notionID);
 			if (shouldSkip) {
-				reporter.log('info', `Skipping empty leaf page: "${document.fileInfo.displayTitle || document.fileInfo.title}"`);
+				reporter.log('info', `Skipping empty leaf page: "${(document as any).finalTitle || document.fileInfo.displayTitle || document.fileInfo.title}"`);
 				bumpProgress();
 				continue;
 			}
@@ -756,7 +796,7 @@ export async function runNotionImport(files: FileList | File[], reporter: Notion
 				bumpProgress();
 				continue;
 			}
-			reporter.setCurrentItem(document.fileInfo.displayTitle || document.fileInfo.title);
+			reporter.setCurrentItem((document as any).finalTitle || document.fileInfo.displayTitle || document.fileInfo.title);
 			try {
 				const markdownInfo = await readToMarkdown(plan.registry.resolverInfo, document.entry, document.notionID);
 				if (markdownInfo.warnings?.length) {
@@ -783,7 +823,7 @@ export async function runNotionImport(files: FileList | File[], reporter: Notion
 				bumpProgress();
 				return;
 			}
-			reporter.setCurrentItem(document.fileInfo.displayTitle || document.fileInfo.title);
+			reporter.setCurrentItem((document as any).finalTitle || document.fileInfo.displayTitle || document.fileInfo.title);
 			try {
 				expectedFolds += await writeDocumentContent(client, reporter, document, plan, markdownCache, uploadedAttributeViewIDs, stats);
 			} catch (error: any) {

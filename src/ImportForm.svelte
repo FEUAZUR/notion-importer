@@ -24,6 +24,8 @@
 
 	// File input
 	let files: File[] = [];
+	let notebookName = 'Notion';
+	let importMode: 'replace' | 'incremental' = 'replace';
 
 	// Show errors panel
 	let showErrors = false;
@@ -103,7 +105,7 @@
 		progressTotal = 100;
 		currentFile = '';
 
-		await notionComponent.startImport(files);
+		await notionComponent.startImport(files, notebookName, importMode);
 	}
 
 	$: progressPercent = progressTotal === 0 ? 0 : Math.min(100, Number((progressCurrent / progressTotal * 100).toFixed(1)));
@@ -133,6 +135,35 @@
 				accept_ext={['.zip']}
 				labelText={pluginInstance.i18n.dropFileHere}
 			/>
+		</div>
+
+		<div class="section">
+			<div class="section-header">
+				<span class="section-label">{pluginInstance.i18n.notebookName || 'Notebook Name'}</span>
+			</div>
+			<input
+				class="b3-text-field"
+				style="width: 100%;"
+				type="text"
+				bind:value={notebookName}
+				placeholder="Notion"
+			/>
+		</div>
+
+		<div class="section">
+			<div class="section-header">
+				<span class="section-label">{pluginInstance.i18n.importMode || 'Import Mode'}</span>
+			</div>
+			<div class="b3-form__checkbox">
+				<label class="b3-form__checkbox-label">
+					<input type="radio" bind:group={importMode} value="replace" />
+					<span>{pluginInstance.i18n.replaceNotebook || 'Replace notebook'}</span>
+				</label>
+				<label class="b3-form__checkbox-label">
+					<input type="radio" bind:group={importMode} value="incremental" />
+					<span>{pluginInstance.i18n.incrementalImport || 'Incremental import'}</span>
+				</label>
+			</div>
 		</div>
 
 		<div class="divider"></div>

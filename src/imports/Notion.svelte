@@ -31,12 +31,12 @@
 		},
 	};
 
-	export async function startImport(files: FileList | File[]) {
+	export async function startImport(files: FileList | File[], notebookName: string = 'Notion', importMode: 'replace' | 'incremental' = 'replace') {
 		current = 0;
 		total = 100;
 		stats = { docs: 0, attachments: 0, databases: 0, errors: 0 };
 		dispatch('statsUpdate', { ...stats });
-		const finalStats = await runNotionImport(files, reporter);
+		const finalStats = await runNotionImport(files, reporter, notebookName, importMode);
 		dispatch('importComplete', finalStats);
 	}
 </script>

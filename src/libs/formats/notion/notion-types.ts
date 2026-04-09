@@ -210,6 +210,7 @@ export interface SiYuanWritePlan {
 	registry: NotionExportRegistry;
 	documents: NotionWritePlanDocument[];
 	attachments: NotionWritePlanAttachment[];
+	existingTitles?: Set<string>;
 }
 
 export class NotionResolverInfo {
