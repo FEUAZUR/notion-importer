@@ -16,6 +16,7 @@
     "build": "vite build",
     "make-install": "vite build && node --no-warnings ./scripts/make_install.js",
     "test": "tsc -p tsconfig.tests.json && node tests-dist/tests/suite.js",
+    "test:e2e": "node tests/e2e-kernel.mjs",
     "typecheck": "tsc --noEmit",
     "check": "svelte-check --tsconfig ./tsconfig.json"
   },
