@@ -5,7 +5,9 @@ import { clearSiYuanIDCache, generateSiYuanID, parseHTML } from '../../util.js';
 import { applyInlineStyleMarkersToBlockDOM, readToMarkdown } from './convert-to-md.js';
 import { collectNotionExport } from './export-parser.js';
 import { buildSiYuanWritePlan } from './notion-normalizer.js';
-import type { ImportStats, NotionImportReporter, NotionWritePlanDocument, SiYuanWritePlan } from './notion-types.js';
+import { ImportCancelledError } from './notion-types.js';
+import type { ImportResult, ImportStats, NotionImportReporter, NotionWritePlanDocument, SiYuanWritePlan } from './notion-types.js';
+import { t } from '../../i18n.js';
 
 const CONCURRENCY = 8;
 
@@ -21,23 +23,35 @@ async function runPool<T>(items: T[], concurrency: number, fn: (item: T) => Prom
 	await Promise.all(workers);
 }
 
-async function ensureNotebook(client: Client, reporter: NotionImportReporter, notebookName: string) {
-	const listRes = await client.lsNotebooks({});
-	const existing = listRes?.data?.notebooks?.find((notebook: any) => notebook.name === notebookName);
-	if (existing) {
-		reporter.log('info', `Replacing existing notebook: ${notebookName}`);
-		const removeRes = await client.removeNotebook({ notebook: existing.id as string });
-		if (removeRes.code !== 0) {
-			throw new Error(`Failed to replace notebook "${notebookName}": ${removeRes.msg}`);
+function timestampSuffix(date: Date): string {
+	const pad = (value: number) => String(value).padStart(2, '0');
+	return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+		+ ` ${pad(date.getHours())}h${pad(date.getMinutes())}`;
+}
+
+/**
+ * Never reuses or deletes an existing notebook. The previous version called
+ * removeNotebook() on any notebook named "Notion", so a second import destroyed the
+ * first one (recoverable only from SiYuan's retention-limited history).
+ */
+async function createImportNotebook(client: Client, reporter: NotionImportReporter, baseName: string) {
+	const listRes = await client.lsNotebooks();
+	const taken = new Set((listRes?.data?.notebooks ?? []).map((notebook: any) => notebook.name));
+
+	let name = baseName;
+	if (taken.has(name)) {
+		name = `${baseName} (${timestampSuffix(new Date())})`;
+		for (let attempt = 2; taken.has(name); attempt += 1) {
+			name = `${baseName} (${timestampSuffix(new Date())}) ${attempt}`;
 		}
 	}
 
-	const createRes = await client.createNotebook({ name: notebookName });
+	const createRes = await client.createNotebook({ name });
 	if (createRes.code !== 0) {
-		throw new Error(`Failed to create notebook "${notebookName}": ${createRes.msg}`);
+		throw new Error(`Failed to create notebook "${name}": ${createRes.msg}`);
 	}
-	reporter.log('info', `Created notebook: ${notebookName}`);
-	return createRes.data.notebook.id as string;
+	reporter.log('info', t('logNotebookCreated', name));
+	return { id: createRes.data.notebook.id as string, name };
 }
 
 function buildParentCount(plan: SiYuanWritePlan) {
@@ -161,7 +175,7 @@ async function replaceDocumentChildrenWithBlockDOM(rootBlockID: string, blockDOM
 	}
 
 	const dom = parseHTML(blockDOM);
-	const topLevelBlocks = Array.from(dom.body?.children || [])
+	const topLevelBlocks = Array.from(dom.querySelector('body')?.children || [])
 		.map((node) => (node as HTMLElement).outerHTML)
 		.filter(Boolean);
 	const chunks = topLevelBlocks.length
@@ -191,10 +205,37 @@ function extractMarkdownFromResidualHtmlBlock(content: string) {
 
 	const dom = parseHTML(content);
 	const codeBlock = dom.querySelector('code[data-type="yaml-front-matter"], pre > code');
-	return (codeBlock?.textContent || dom.body?.textContent || '')
+	return (codeBlock?.textContent || dom.querySelector('body')?.textContent || '')
 		.replace(/\u200b/g, '')
 		.replace(/\r\n/g, '\n')
 		.trim();
+}
+
+/**
+ * Reads the definition back through the official endpoint. The kernel silently returns an
+ * empty AV for content it cannot parse (wrong spec, ciphertext in an encrypted notebook),
+ * so a successful putFile alone proves nothing.
+ * Returns a problem description, or '' when the database is sound.
+ */
+async function verifyAttributeView(av: any): Promise<string> {
+	try {
+		const response = await apiJson('/api/av/getAttributeView', { id: av.id });
+		if (response?.code !== 0) {
+			return response?.msg || 'getAttributeView failed';
+		}
+		const stored = response?.data?.av;
+		if (!stored?.id) {
+			return 'the kernel could not read the database back';
+		}
+		const expectedKeys = Array.isArray(av.keyValues) ? av.keyValues.length : 0;
+		const storedKeys = Array.isArray(stored.keyValues) ? stored.keyValues.length : 0;
+		if (storedKeys < expectedKeys) {
+			return `only ${storedKeys} of ${expectedKeys} fields were stored`;
+		}
+		return '';
+	} catch (error: any) {
+		return error?.message || String(error);
+	}
 }
 
 async function writeDocumentContent(
@@ -215,16 +256,25 @@ async function writeDocumentContent(
 			continue;
 		}
 		const blob = new Blob([JSON.stringify(av)], { type: 'application/json' });
+		// Writing the AV definition directly is only sound because every import mints fresh
+		// avIDs the kernel has never parsed (its in-memory AV cache has no TTL and no HTTP
+		// flush). verifyAttributeView below turns a silent miss into a reported error.
 		const putRes = await client.putFile({
 			file: new File([blob], 'data.json', { type: 'application/json' }),
 			path: `/data/storage/av/${av.id}.json`,
 		});
 		if (putRes.code !== 0) {
-			reporter.log('error', `Failed to upload database "${av.id}": ${putRes.msg}`);
+			reporter.log('error', t('logDatabaseFailed', av.name || av.id, putRes.msg));
 			stats.errors += 1;
 		} else {
-			uploadedAttributeViewIDs.add(av.id);
-			stats.databases += 1;
+			const problem = await verifyAttributeView(av);
+			if (problem) {
+				reporter.log('error', t('logDatabaseFailed', av.name || av.id, problem));
+				stats.errors += 1;
+			} else {
+				uploadedAttributeViewIDs.add(av.id);
+				stats.databases += 1;
+			}
 			reporter.updateStats({ ...stats });
 		}
 	}
@@ -273,21 +323,30 @@ async function writeDocumentContent(
 		}));
 	}
 
+	// custom-avs is a comma-separated list: a block bound to several databases must keep
+	// every id, so accumulate first and write each block once.
+	const avIDsByBlock = new Map<string, Set<string>>();
 	for (const av of markdownInfo.attributeViews) {
 		for (const keyValue of av.keyValues) {
 			if (keyValue.key.type !== 'block') {
 				continue;
 			}
 			for (const rowValue of keyValue.values) {
-				if (rowValue?.isDetached) {
+				const boundID = rowValue?.block?.id;
+				if (rowValue?.isDetached || !boundID) {
 					continue;
 				}
-				attrPromises.push(client.setBlockAttrs({
-					attrs: { 'custom-avs': av.id },
-					id: rowValue.block.id,
-				}));
+				const ids = avIDsByBlock.get(boundID) ?? new Set<string>();
+				ids.add(av.id);
+				avIDsByBlock.set(boundID, ids);
 			}
 		}
+	}
+	for (const [blockID, avIDs] of avIDsByBlock) {
+		attrPromises.push(client.setBlockAttrs({
+			attrs: { 'custom-avs': Array.from(avIDs).join(',') },
+			id: blockID,
+		}));
 	}
 
 	if (attrPromises.length > 0) {
@@ -614,6 +673,31 @@ async function normalizeNativeInlineHighlights(
 	return normalizedBlocks;
 }
 
+const SENTINELS = ['SYINLINESTYLE', 'SYFOLDFOLDSTART', 'SYFOLDFOLDEND', 'SYCOLOR_', 'SYCOLROW', 'SYCOLCOL'];
+
+/**
+ * Last-resort audit. Conversion markers leaking into the finished notebook is a silent
+ * corruption: a real import was found carrying SYINLINESTYLE and SYFOLDFOLD markers that
+ * every fix-up pass had missed. Surface them instead of shipping them.
+ */
+async function reportResidualMarkers(reporter: NotionImportReporter, notebookIDs: string[], stats: ImportStats) {
+	if (!notebookIDs.length) {
+		return;
+	}
+	const boxList = notebookIDs.map((id) => `'${id}'`).join(',');
+	for (const sentinel of SENTINELS) {
+		const rows: Array<{ count: number }> = await sqlQuery(
+			`SELECT COUNT(*) AS count FROM blocks WHERE box IN (${boxList}) AND content LIKE '%${sentinel}%'`,
+		);
+		const count = Number(rows?.[0]?.count ?? 0);
+		if (count > 0) {
+			stats.warnings += 1;
+			reporter.log('warn', `${count} block(s) still contain the conversion marker "${sentinel}"`);
+		}
+	}
+	reporter.updateStats({ ...stats });
+}
+
 async function rebuildResidualHtmlDocuments(
 	reporter: NotionImportReporter,
 	notebookIDs: string[],
@@ -623,8 +707,11 @@ async function rebuildResidualHtmlDocuments(
 	}
 
 	const boxList = notebookIDs.map((id) => `'${id}'`).join(',');
+	// Not `type = 'html'`: Lute also parks unconverted content in a code block with
+	// data-type="yaml-front-matter", which is exactly where markers were found surviving
+	// in a real import. Match on content and let the extractor decide.
 	const htmlBlocks: Array<{ root_id: string; content: string }> = await sqlQuery(
-		`SELECT root_id, content FROM blocks WHERE box IN (${boxList}) AND type = 'html' AND content LIKE '%SYINLINESTYLE_%' LIMIT 5000`,
+		`SELECT root_id, content FROM blocks WHERE box IN (${boxList}) AND type IN ('html', 'c') AND content LIKE '%SYINLINESTYLE\\_%' ESCAPE '\\' LIMIT 5000`,
 	);
 	if (!htmlBlocks.length) {
 		return 0;
@@ -662,40 +749,62 @@ async function rebuildResidualHtmlDocuments(
 	return rebuiltDocuments;
 }
 
-export async function runNotionImport(files: FileList | File[], reporter: NotionImportReporter) {
+export async function runNotionImport(
+	files: FileList | File[],
+	reporter: NotionImportReporter,
+): Promise<ImportResult> {
 	clearSiYuanIDCache();
-	const stats: ImportStats = { docs: 0, attachments: 0, databases: 0, errors: 0 };
-	const client = new Client({});
+	const stats: ImportStats = { docs: 0, attachments: 0, databases: 0, warnings: 0, errors: 0 };
+	const client = new Client();
 	const pickedFiles = Array.from(files).map((file) => new WebPickedFile(file));
 	let currentProgress = 0;
 	let totalProgress = 0;
+	let notebookName = '';
 
 	const bumpProgress = () => {
 		currentProgress += 1;
 		reporter.updateProgress(currentProgress, totalProgress);
+	};
+	const checkAborted = () => {
+		if (reporter.signal?.aborted) {
+			throw new ImportCancelledError();
+		}
 	};
 
 	try {
 		reporter.setPhase('collecting');
 		reporter.updateStats({ ...stats });
 		reporter.updateProgress(0, 1);
-		reporter.log('info', 'Scanning Notion HTML export...');
+		reporter.log('info', t('logScanning'));
 
 		const registry = await collectNotionExport(pickedFiles, reporter);
+		checkAborted();
 		const plan = buildSiYuanWritePlan(registry);
 		reporter.log(
 			'info',
-			`Manifest ready: ${plan.documents.length} HTML document(s), ${plan.attachments.length} attachment(s), ${Object.keys(registry.resolverInfo.csvFileInfos).length} CSV database file(s).`,
+			t(
+				'logManifestReady',
+				plan.documents.length,
+				plan.attachments.length,
+				Object.keys(registry.resolverInfo.csvFileInfos).length,
+			),
 		);
 
 		reporter.setPhase('creating');
-		const notebookID = await ensureNotebook(client, reporter, plan.notebookName);
+		const notebook = await createImportNotebook(client, reporter, plan.notebookName);
+		const notebookID = notebook.id;
+		notebookName = notebook.name;
 		const parentCount = buildParentCount(plan);
-		totalProgress = plan.documents.length + plan.attachments.length + plan.documents.length + plan.documents.length;
+		// Content-addressed assets collapse duplicates: upload each distinct target once.
+		const uniqueAttachments = Array.from(
+			new Map(plan.attachments.map((item) => [item.attachmentInfo.pathInSiYuanFs, item])).values(),
+		);
+		totalProgress = plan.documents.length * 3 + uniqueAttachments.length;
 		currentProgress = 0;
 		reporter.updateProgress(currentProgress, totalProgress);
 
 		for (const document of plan.documents) {
+			checkAborted();
 			reporter.setCurrentItem(document.fileInfo.displayTitle || document.fileInfo.title);
 			const shouldSkip = !document.fileInfo.hasContent && !parentCount.has(document.notionID);
 			if (shouldSkip) {
@@ -713,7 +822,7 @@ export async function runNotionImport(files: FileList | File[], reporter: Notion
 			if (createRes.code !== 0) {
 				stats.errors += 1;
 				reporter.updateStats({ ...stats });
-				reporter.log('error', `Failed to create doc "${syPath}": ${createRes.msg}`);
+				reporter.log('error', t('logCreateDocFailed', syPath, createRes.msg));
 				bumpProgress();
 				continue;
 			}
@@ -724,8 +833,9 @@ export async function runNotionImport(files: FileList | File[], reporter: Notion
 		}
 
 		reporter.setPhase('writing');
-		reporter.log('info', 'Uploading attachments...');
-		await runPool(plan.attachments, CONCURRENCY, async ({ entry, attachmentInfo }) => {
+		reporter.log('info', t('logUploadingAttachments'));
+		await runPool(uniqueAttachments, CONCURRENCY, async ({ entry, attachmentInfo }) => {
+			checkAborted();
 			reporter.setCurrentItem(entry.name);
 			try {
 				const data = await entry.read();
@@ -735,14 +845,17 @@ export async function runNotionImport(files: FileList | File[], reporter: Notion
 				});
 				if (putRes.code !== 0) {
 					stats.errors += 1;
-					reporter.log('error', `Failed to upload "${entry.name}": ${putRes.msg}`);
+					reporter.log('error', t('logUploadFailed', entry.name, putRes.msg));
 				} else {
 					stats.attachments += 1;
 					reporter.updateStats({ ...stats });
 				}
 			} catch (error: any) {
+				if (error instanceof ImportCancelledError) {
+					throw error;
+				}
 				stats.errors += 1;
-				reporter.log('error', `Failed to upload "${entry.name}": ${error?.message || error}`);
+				reporter.log('error', t('logUploadFailed', entry.name, error?.message || error));
 			} finally {
 				reporter.updateStats({ ...stats });
 				bumpProgress();
@@ -750,8 +863,9 @@ export async function runNotionImport(files: FileList | File[], reporter: Notion
 		});
 
 		const markdownCache = new Map<string, Awaited<ReturnType<typeof readToMarkdown>>>();
-		reporter.log('info', 'Analyzing documents to stabilize shared database views...');
+		reporter.log('info', t('logAnalyzingDocuments'));
 		for (const document of plan.documents) {
+			checkAborted();
 			if (!document.fileInfo.blockID) {
 				bumpProgress();
 				continue;
@@ -761,24 +875,27 @@ export async function runNotionImport(files: FileList | File[], reporter: Notion
 				const markdownInfo = await readToMarkdown(plan.registry.resolverInfo, document.entry, document.notionID);
 				if (markdownInfo.warnings?.length) {
 					for (const warning of markdownInfo.warnings) {
-						stats.errors += 1;
+						// Warnings are not errors: conflating them made the summary claim
+						// "N errors" and then show a green "completed successfully".
+						stats.warnings += 1;
 						reporter.log('warn', `[${document.fileInfo.title}] ${warning}`);
 					}
 				}
 				markdownCache.set(document.notionID, markdownInfo);
 			} catch (error: any) {
 				stats.errors += 1;
-				reporter.log('error', `Failed to analyze "${document.fileInfo.title}": ${error?.message || error}`);
+				reporter.log('error', t('logAnalyzeFailed', document.fileInfo.title, error?.message || error));
 			} finally {
 				reporter.updateStats({ ...stats });
 				bumpProgress();
 			}
 		}
 
-		reporter.log('info', 'Writing documents and databases...');
+		reporter.log('info', t('logWritingDocuments'));
 		const uploadedAttributeViewIDs = new Set<string>();
 		let expectedFolds = 0;
 		await runPool(plan.documents, CONCURRENCY, async (document) => {
+			checkAborted();
 			if (!document.fileInfo.blockID) {
 				bumpProgress();
 				return;
@@ -787,8 +904,11 @@ export async function runNotionImport(files: FileList | File[], reporter: Notion
 			try {
 				expectedFolds += await writeDocumentContent(client, reporter, document, plan, markdownCache, uploadedAttributeViewIDs, stats);
 			} catch (error: any) {
+				if (error instanceof ImportCancelledError) {
+					throw error;
+				}
 				stats.errors += 1;
-				reporter.log('error', `Failed to write "${document.fileInfo.title}": ${error?.message || error}`);
+				reporter.log('error', t('logWriteFailed', document.fileInfo.title, error?.message || error));
 			} finally {
 				reporter.updateStats({ ...stats });
 				bumpProgress();
@@ -815,23 +935,31 @@ export async function runNotionImport(files: FileList | File[], reporter: Notion
 			reporter.log('info', `Normalized ${normalizedNativeHighlights} native inline highlight block(s).`);
 		}
 
+		await reportResidualMarkers(reporter, [notebookID], stats);
+
 		reporter.setPhase('done');
 		reporter.log(
 			'info',
-			`Import finished. ${stats.docs} docs, ${stats.attachments} attachments, ${stats.databases} databases, ${stats.errors} errors.`,
+			t('logImportFinished', stats.docs, stats.attachments, stats.databases, stats.warnings, stats.errors),
 		);
 		showMessage(
-			stats.errors > 0 ? `Import completed with ${stats.errors} error(s).` : 'Import completed successfully!',
+			stats.errors > 0 ? t('importWithErrors') : t('importSuccess'),
 			-1,
 			stats.errors > 0 ? 'error' : 'info',
 		);
-		return { ...stats };
+		return { ...stats, outcome: 'completed', notebookName };
 	} catch (error: any) {
+		reporter.setPhase('done');
+		if (error instanceof ImportCancelledError) {
+			reporter.log('warn', t('logImportCancelled'));
+			reporter.updateStats({ ...stats });
+			showMessage(t('importCancelled'), 5000, 'info');
+			return { ...stats, outcome: 'cancelled', notebookName };
+		}
 		stats.errors += 1;
 		reporter.updateStats({ ...stats });
-		reporter.setPhase('done');
-		reporter.log('error', `Fatal import error: ${error?.message || error}`);
-		showMessage(`Import error: ${error?.message || error}`, 5000, 'error');
-		return { ...stats };
+		reporter.log('error', t('logFatalError', error?.message || error));
+		showMessage(t('logFatalError', error?.message || error), 5000, 'error');
+		return { ...stats, outcome: 'failed', notebookName };
 	}
 }

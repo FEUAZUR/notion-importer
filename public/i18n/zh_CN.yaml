@@ -1,0 +1,61 @@
+---
+addTopBarIcon: 从 Notion 导入
+commandImport: 从 Notion 导入
+dialogTitle: 将 Notion 导出文件导入思源
+
+# Phases
+phaseCollecting: 收集文件
+phaseCreating: 创建文档
+phaseWriting: 写入内容与媒体
+phaseDone: 导入完成
+
+# UI labels
+selectFile: 选择你的 Notion HTML 导出文件（.zip）
+dropFileHere: 将 ZIP 文件拖放到此处，或点击浏览
+importButton: 开始导入
+cancelButton: 取消导入
+cancelling: 正在取消...
+processingPrefix: "正在处理："
+
+# Log panel
+logSectionTitle: 导入日志
+errorsSectionTitle: 错误
+logTruncated: "较早的条目已隐藏（共 {0} 条）"
+
+# Stats
+docsImported: 文档
+attachmentsUploaded: 附件
+databasesCreated: 数据库
+warningsCount: 警告
+errorsCount: 错误
+
+# Summary
+importSuccess: 导入成功完成
+importWithWarnings: 导入完成，但有警告
+importWithErrors: 导入完成，但有错误
+importCancelled: 导入已取消
+notebookCreatedAs: "已导入到笔记本：{0}"
+
+# Validation and guards
+pleaseSelectFile: 请先选择一个 ZIP 文件。
+importAlreadyRunning: 已有导入任务正在运行。
+encryptedNotebookUnsupported: 暂不支持加密笔记本，请导入到普通笔记本。
+workspaceReadonly: 当前工作空间为只读，或你未以管理员身份登录。
+
+# Writer log messages
+logScanning: 正在扫描 Notion 导出文件...
+logManifestReady: "清单就绪：{0} 个文档，{1} 个附件，{2} 个数据库文件。"
+logNotebookCreated: "已创建笔记本：{0}"
+logUploadingAttachments: 正在上传附件...
+logAnalyzingDocuments: 正在分析文档以稳定共享数据库...
+logWritingDocuments: 正在写入文档与数据库...
+logResolvingRelations: 正在解析数据库关联...
+logCreateDocFailed: '创建文档 "{0}" 失败：{1}'
+logUploadFailed: '上传 "{0}" 失败：{1}'
+logAnalyzeFailed: '分析 "{0}" 失败：{1}'
+logWriteFailed: '写入 "{0}" 失败：{1}'
+logDatabaseFailed: '创建数据库 "{0}" 失败：{1}'
+logImportFinished: "导入完成：{0} 个文档，{1} 个附件，{2} 个数据库，{3} 个警告，{4} 个错误。"
+logImportCancelled: 用户已取消导入。
+logFatalError: "导入致命错误：{0}"
+logMarkdownExportDetected: 检测到 Notion Markdown 导出。请改为从 Notion 导出 HTML 格式。

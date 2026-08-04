@@ -149,8 +149,10 @@ if (!fs.existsSync(devDir)) {
 }
 
 function cmpPath(path1, path2) {
-    path1 = path1.replace(/\\/g, '/');
-    path2 = path2.replace(/\\/g, '/');
+    // readlinkSync on a Windows junction returns an extended-length path (\\?\C:\...),
+    // so the comparison always failed and a second `make-link` reported a false error.
+    path1 = path1.replace(/^\\\\\?\\/, '').replace(/\\/g, '/');
+    path2 = path2.replace(/^\\\\\?\\/, '').replace(/\\/g, '/');
     // sepertor at tail
     if (path1[path1.length - 1] !== '/') {
         path1 += '/';

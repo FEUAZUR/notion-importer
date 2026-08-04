@@ -151,41 +151,34 @@ function cmpPath(path1, path2) {
 const targetPath = `${targetDir}/${name}`;
 
 
+// Synchronous on purpose: the callback version logged success immediately and the process
+// could exit mid-copy, leaving a truncated index.js in the plugins directory.
 function copyDirectory(srcDir, dstDir) {
     if (!fs.existsSync(dstDir)) {
-        fs.mkdirSync(dstDir);
+        fs.mkdirSync(dstDir, { recursive: true });
         log(`Created directory ${dstDir}`);
     }
-    //将 distDir 下的所有文件复制到 targetPath
-    fs.readdir(srcDir, { withFileTypes: true }, (err, files) => {
-        if (err) {
-            error('Error reading source directory:', err);
-            return;
+
+    for (const file of fs.readdirSync(srcDir, { withFileTypes: true })) {
+        const src = path.join(srcDir, file.name);
+        const dst = path.join(dstDir, file.name);
+        if (file.isDirectory()) {
+            copyDirectory(src, dst);
+        } else {
+            fs.copyFileSync(src, dst);
         }
+    }
+}
 
-        // 遍历源目录中的所有文件和子目录
-        files.forEach((file) => {
-            const src = path.join(srcDir, file.name);
-            const dst = path.join(dstDir, file.name);
-
-            // 判断当前项是文件还是目录
-            if (file.isDirectory()) {
-                // 如果是目录，则递归调用复制函数复制子目录
-                copyDirectory(src, dst);
-            } else {
-                // 如果是文件，则复制文件到目标目录
-                fs.copyFile(src, dst, (err) => {
-                if (err) {
-                    error('Error copying file:' + err);
-                } else {
-                    log(`Copied file: ${src} --> ${dst}`);
-                }
-                });
-            }
-        });
-        log(`Copied ${distDir} to ${targetPath}`);
-    });
+if (!fs.existsSync(distDir)) {
+    error(`Nothing to install: ${distDir} does not exist. Run "pnpm run build" first.`);
+    process.exit(1);
+}
+// Remove first, otherwise files deleted from dist linger in the installed plugin.
+if (fs.existsSync(targetPath)) {
+    fs.rmSync(targetPath, { recursive: true, force: true });
 }
 copyDirectory(distDir, targetPath);
+log(`Copied ${distDir} to ${targetPath}`);
 
 

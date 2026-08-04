@@ -27,9 +27,10 @@ import {
 	stripNotionId,
 	stripParentDirectories,
 	toTimestamp,
-	timestampIsPureDate,
+	parseNotionDate,
 	parseEuropeanNumber,
 } from './notion-utils.js';
+import type { ParsedNotionDate } from './notion-utils.js';
 
 let lute = (window as any).Lute.New();
 
@@ -503,7 +504,7 @@ export async function readToMarkdown(info: NotionResolverInfo, file: ZipEntryFil
 
 	replaceNestedTags(body, 'strong');
 	replaceNestedTags(body, 'em');
-	fixNotionEmbeds(body, info);
+	fixNotionEmbeds(body);
 	fixNotionCallouts(body);
 	stripLinkFormatting(body);
 	fixNotionDates(body);
@@ -656,14 +657,6 @@ function parseProperty(property: HTMLTableRowElement): {content: string; title: 
 
 function isImagePath(p: string): boolean {
 	return /(\.png|\.jpg|\.webp|\.gif|\.bmp|\.jpeg)\!?\S*$/i.test(p);
-}
-
-function isVideoPath(p: string): boolean {
-	return /(\.mp4|\.webm|\.mov|\.avi|\.mkv)\!?\S*$/i.test(p);
-}
-
-function isAudioPath(p: string): boolean {
-	return /(\.mp3|\.wav|\.ogg|\.flac|\.m4a)\!?\S*$/i.test(p);
 }
 
 function getDecodedURI(a: HTMLAnchorElement): string {
@@ -869,13 +862,28 @@ function parseDatabaseGroupBy(containerNode: HTMLElement): NotionDatabaseViewGro
 /**
  * Find attachment info matching the given path from info.pathsToAttachmentInfo
  */
+/**
+ * Resolution order matters: a bare `includes()` scan returned whichever attachment happened
+ * to be registered first, so a reference to "1.png" could resolve to "Archive/old 1.png".
+ * Exact, then path-suffix, then substring as a last resort.
+ */
 function findAttachment(info: NotionResolverInfo, p: string): NotionAttachmentInfo | undefined {
-	for (const filename of Object.keys(info.pathsToAttachmentInfo)) {
-		if (filename.includes(p)) {
-			return info.pathsToAttachmentInfo[filename]
-		}
+	if (!p) {
+		return undefined;
 	}
-	return undefined;
+	const exact = info.pathsToAttachmentInfo[p];
+	if (exact) {
+		return exact;
+	}
+
+	const keys = Object.keys(info.pathsToAttachmentInfo);
+	const suffix = keys.find((filename) => filename.endsWith(`/${p}`));
+	if (suffix) {
+		return info.pathsToAttachmentInfo[suffix];
+	}
+
+	const contained = keys.find((filename) => filename.includes(p));
+	return contained ? info.pathsToAttachmentInfo[contained] : undefined;
 }
 
 /**
@@ -1032,11 +1040,6 @@ function fixEquations(body: HTMLElement) {
 	}
 }
 
-function stripToSentence(paragraph: string) {
-	const firstSentence = paragraph.match(/^[^\.\?\!\n]*[\.\?\!]?/)?.[0];
-	return firstSentence ?? '';
-}
-
 function fixNotionCallouts(body: HTMLElement) {
 	for (let callout of HTMLElementfindAll(body, 'figure.callout')) {
 		const blockquote = createEl('blockquote');
@@ -1059,7 +1062,7 @@ function fixNotionCallouts(body: HTMLElement) {
 	}
 }
 
-function fixNotionEmbeds(body: HTMLElement, info?: NotionResolverInfo) {
+function fixNotionEmbeds(body: HTMLElement) {
 	// Convert Notion bookmark embeds to simple links.
 	// Notion exports bookmarks as <a class="bookmark source"> with title/description/image
 	// children. We convert them to a plain <p><a href="url">title</a></p>.
@@ -1089,6 +1092,18 @@ const notionSelectColorToSiYuan: Record<string, string> = {
 	'select-value-color-pink': '9',
 	'select-value-color-red': '10',
 };
+
+/**
+ * SiYuan's palette is "1".."14". Derived from the option name rather than its position so
+ * that re-importing the same export keeps the same colours.
+ */
+function stableSelectColor(name: string): string {
+	let hash = 0;
+	for (let i = 0; i < name.length; i += 1) {
+		hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
+	}
+	return String((hash % 14) + 1);
+}
 
 // Extract color from a select/option element
 function extractSelectColor(el: HTMLElement): string {
@@ -1564,61 +1579,6 @@ function convertHtmlLinksToURLs(content: HTMLElement) {
 		const span = createSpan();
 		span.textContent = link.getAttribute('href') ?? '';
 		link.replaceWith(span);
-	}
-}
-
-function convertLinksToSiYuan(info: NotionResolverInfo, notionLinks: NotionLink[]) {
-	for (let link of notionLinks) {
-		let siyuanLink = createSpan();
-
-		switch (link.type) {
-			case 'relation':
-				const linkInfo = info.idsToFileInfo[link.id];
-				if (linkInfo && linkInfo.blockID !== '') {
-					// Vérifier d'abord les icônes images
-					const imgIcon = link.a.querySelector('img.icon') as HTMLImageElement | null;
-					const iconSpan = link.a.querySelector('span.icon');
-					
-					if (imgIcon) {
-						// SiYuan block reference anchor text is plain text — images can't render
-						// inside it. Just use the page title as anchor text.
-						siyuanLink.textContent = `((${linkInfo.blockID} '${linkInfo.displayTitle || linkInfo.title}'))`;
-						break;
-					}
-					
-					// Fallback sur les emojis texte
-					const iconText = iconSpan?.textContent?.trim() || '';
-					const displayText = iconText ? `${iconText} ${linkInfo.displayTitle || linkInfo.title}` : (linkInfo.displayTitle || linkInfo.title);
-					siyuanLink.textContent = `((${linkInfo.blockID} '${displayText}'))`;
-				} else {
-					addImportWarning('missing relation data for id: ' + link.id);
-					const { basename } = parseFilePath(
-						decodeURI(link.a.getAttribute('href') ?? '')
-					);
-					siyuanLink.textContent = `[[${stripNotionId(basename)}]]`;
-				}
-				break;
-			case 'attachment':
-				let attachmentInfo = info.pathsToAttachmentInfo[link.path];
-				if (!attachmentInfo) {
-					addImportWarning('missing attachment data for: ' + link.path);
-					continue;
-				}
-				siyuanLink.textContent = `[${attachmentInfo.nameWithExtension}](${attachmentInfo.pathInSiYuanMd})`;
-				break;
-			case 'image':
-				siyuanLink = createEl('img')
-				let imageInfo = info.pathsToAttachmentInfo[link.path];
-				if (!imageInfo) {
-					addImportWarning('missing image file for: ' + link.path);
-					continue;
-				}
-				siyuanLink.setAttribute('src', imageInfo.pathInSiYuanMd);
-				siyuanLink.setAttribute('alt', imageInfo.nameWithExtension);
-				break;
-		}
-
-		link.a.replaceWith(siyuanLink);
 	}
 }
 
@@ -2505,27 +2465,6 @@ function shouldMergeBuiltTables(a: BuiltDatabaseTable, b: BuiltDatabaseTable) {
 	return false;
 }
 
-function hasStrongColumnOverlap(a: BuiltDatabaseTable, b: BuiltDatabaseTable) {
-	const aColumns = Array.from(new Set(a.cols.map((col) => normalizeNotionLookup(col.name)).filter(Boolean)));
-	const bColumns = new Set(b.cols.map((col) => normalizeNotionLookup(col.name)).filter(Boolean));
-	if (aColumns.length === 0 || bColumns.size === 0) {
-		return false;
-	}
-
-	let sharedColumns = 0;
-	for (const column of aColumns) {
-		if (bColumns.has(column)) {
-			sharedColumns += 1;
-		}
-	}
-
-	const smallestSetSize = Math.min(aColumns.length, bColumns.size);
-	return (
-		sharedColumns >= Math.min(2, smallestSetSize) &&
-		sharedColumns / Math.max(1, smallestSetSize) >= 0.6
-	);
-}
-
 function hasStrongSharedStateColumnOverlap(sharedState: SharedDatabaseState, table: BuiltDatabaseTable) {
 	const sharedColumns = new Set(sharedState.columns.map((column) => column.normalizedName).filter(Boolean));
 	const tableColumns = Array.from(new Set(table.cols.map((col) => normalizeNotionLookup(col.name)).filter(Boolean)));
@@ -2929,9 +2868,10 @@ function materializeSharedDatabaseState(info: NotionResolverInfo, sharedState: S
 			keyValue.key.id = column.keyID;
 			keyValue.values = rowOrder.map((row) => {
 				const rawValue = row.valuesByColumn[column.normalizedName];
-				const times = Array.isArray(rawValue)
-					? rawValue.map((part) => toTimestamp(part, dateOrder)).filter(Boolean)
+				const parsedDates = Array.isArray(rawValue)
+					? rawValue.map((part) => parseNotionDate(part, dateOrder)).filter((d): d is ParsedNotionDate => Boolean(d))
 					: [];
+				const times = parsedDates.map((d) => d.timestamp);
 				if (!times.length) {
 					return {
 						id: generateSiYuanID(),
@@ -2954,7 +2894,9 @@ function materializeSharedDatabaseState(info: NotionResolverInfo, sharedState: S
 						content: times[0],
 						isNotEmpty: true,
 						hasEndDate: false,
-						isNotTime: timestampIsPureDate(times[0]),
+						// Derived from whether a clock time was actually parsed. Deriving it from
+						// getHours() made 91% of pure dates render as "<date> 14:00".
+						isNotTime: !parsedDates[0].hasTime,
 						content2: 0,
 						isNotEmpty2: false,
 						formattedContent: '',
@@ -2969,9 +2911,9 @@ function materializeSharedDatabaseState(info: NotionResolverInfo, sharedState: S
 			});
 		} else if (['select', 'mSelect'].includes(colType)) {
 			const opts = new Map<string, string>();
-			Array.from(column.selectValues).forEach((value, index) => {
-				opts.set(value, column.selectColors[value] || `${(index % 10) + 1}`);
-			});
+			for (const value of column.selectValues) {
+				opts.set(value, column.selectColors[value] || stableSelectColor(value));
+			}
 			keyValue.key = generateColumnKey(column.name, colType, Array.from(opts, ([name, color]) => ({ name, color })));
 			keyValue.key.id = column.keyID;
 			keyValue.values = rowOrder.map((row) => {
@@ -2987,7 +2929,9 @@ function materializeSharedDatabaseState(info: NotionResolverInfo, sharedState: S
 					updatedAt: Date.now(),
 					mSelect: selectedValues.map((value) => ({
 						content: value,
-						color: opts.get(value),
+						// A value seen only in another table of a merged database is absent from
+						// `opts`; undefined serialises away and Go reads an invalid empty colour.
+						color: opts.get(value) ?? stableSelectColor(value),
 					})),
 				};
 			});
@@ -2996,16 +2940,19 @@ function materializeSharedDatabaseState(info: NotionResolverInfo, sharedState: S
 			keyValue.key.id = column.keyID;
 			keyValue.values = rowOrder.map((row) => {
 				const rawValue = row.valuesByColumn[column.normalizedName];
+				const isDetached = !row.hasRelBlock;
 				return {
 					id: generateSiYuanID(),
 					keyID: keyValue.key.id,
 					blockID: row.rowid,
 					type: colType,
-					isDetached: !row.hasRelBlock,
+					isDetached,
 					createdAt: Date.now(),
 					updatedAt: Date.now(),
 					block: {
-						id: row.rowid,
+						// ValueBlock.ID is "the bound block id, empty when not bound". Writing a
+						// synthetic id on a detached row made it render as a broken block ref.
+						id: isDetached ? '' : row.rowid,
 						content: databaseCellValueToText(rawValue),
 						created: Date.now(),
 						updated: Date.now(),
@@ -3046,13 +2993,17 @@ function materializeSharedDatabaseState(info: NotionResolverInfo, sharedState: S
 							assetType = 'image';
 						}
 						let assetPath = value;
+						let assetName = value;
 						const attachment = findAttachment(info, value);
 						if (attachment) {
 							assetPath = attachment.pathInSiYuanMd;
+							assetName = attachment.nameWithExtension;
 						}
 						return {
 							type: assetType,
-							name: assetPath,
+							// Value.String() renders "Name Content"; using the path for both showed
+							// the asset path twice instead of its filename.
+							name: assetName,
 							content: assetPath,
 						};
 					}),
@@ -3075,6 +3026,9 @@ function materializeSharedDatabaseState(info: NotionResolverInfo, sharedState: S
 						number: {
 							content: 0,
 							isNotEmpty: false,
+							// ValueNumber.FormatNumber() recomputes formattedContent from the
+							// VALUE's format, not the key's; omitting it wiped currency display.
+							format: column.numberDisplay.numberFormat || '',
 							formattedContent: '',
 						},
 					};
@@ -3089,6 +3043,7 @@ function materializeSharedDatabaseState(info: NotionResolverInfo, sharedState: S
 					number: {
 						content: parsed.value,
 						isNotEmpty: true,
+						format: column.numberDisplay.numberFormat || '',
 						formattedContent:
 							row.displayValuesByColumn[column.normalizedName] ||
 							(column.numberDisplay.roundedUpToUnit
@@ -3131,11 +3086,14 @@ function materializeSharedDatabaseState(info: NotionResolverInfo, sharedState: S
 	});
 
 	const materialized = {
-		spec: 4,
+		// CurrentSpec in kernel/av/av_fix.go. Emitting 4 left the kernel to migrate on first
+		// save, which rewrote filters into the spec-5 root-group shape behind our back.
+		spec: 5,
 		id: sharedState.avID,
 		name: sharedState.name,
 		keyValues,
-		keyIDs: null,
+		// Field ordering; `null` left column order non-deterministic.
+		keyIDs: keyValues.map((keyValue: any) => keyValue.key.id),
 		viewID: sharedState.defaultViewID || sharedState.views[0]?.id || generateSiYuanID(),
 		views: sharedState.views.map((view) => {
 			const visibleColumnSet = new Set(view.visibleColumnNames);
@@ -3145,12 +3103,19 @@ function materializeSharedDatabaseState(info: NotionResolverInfo, sharedState: S
 					.filter((column): column is SharedDatabaseColumn => Boolean(column)),
 				...sharedState.columns.filter((column) => !visibleColumnSet.has(column.normalizedName)),
 			];
+			const itemIds = view.rowKeys
+				.map((rowKey) => sharedState.rowsByKey.get(rowKey)?.rowid)
+				.filter((rowid): rowid is string => Boolean(rowid));
 			return {
 				id: view.id,
 				icon: '',
 				name: view.name,
 				hideAttrViewName: false,
 				desc: '',
+				// spec 5 keeps filters/sorts/pageSize on the view; the LayoutTable copies are
+				// deprecated (removal after 2026-06-30) and were silently ignored.
+				filters: [{ column: '', operator: '', value: null, combination: 'and' }],
+				sorts: [],
 				pageSize: 50,
 				type: 'table',
 				table: {
@@ -3158,7 +3123,6 @@ function materializeSharedDatabaseState(info: NotionResolverInfo, sharedState: S
 					id: generateSiYuanID(),
 					showIcon: true,
 					wrapField: false,
-					pageSize: 50,
 					columns: orderedColumns.map((column) => {
 						const col: any = {
 							id: column.keyID,
@@ -3177,9 +3141,13 @@ function materializeSharedDatabaseState(info: NotionResolverInfo, sharedState: S
 									return total + (parsed?.value ?? 0);
 								}, 0);
 								col.calc.result = {
+									// FieldCalc.Result is an av.Value: without `type` the kernel's
+									// Value.String() hits its default branch and the footer renders blank.
+									type: 'number',
 									number: {
 										content: Math.ceil(sum),
 										isNotEmpty: true,
+										format: column.numberDisplay.numberFormat || '',
 										formattedContent: formatRoundedNumberValue(sum, column.numberDisplay),
 									},
 								};
@@ -3187,23 +3155,13 @@ function materializeSharedDatabaseState(info: NotionResolverInfo, sharedState: S
 						}
 						return col;
 					}),
-					rowIds: view.rowKeys
-						.map((rowKey) => sharedState.rowsByKey.get(rowKey)?.rowid)
-						.filter((rowid): rowid is string => Boolean(rowid)),
-					filters: view.filters as any[],
-					sorts: view.sorts as any[],
 				},
-				itemIds: view.rowKeys
-					.map((rowKey) => sharedState.rowsByKey.get(rowKey)?.rowid)
-					.filter((rowid): rowid is string => Boolean(rowid)),
+				itemIds,
 				groupCreated: view.groupBy?.created ?? 0,
 				groupItemIds: view.groupBy?.itemIDs ?? null,
 				groupFolded: view.groupBy?.folded ?? false,
 				groupHidden: view.groupBy?.hidden ?? 0,
 				groupSort: view.groupBy?.sort ?? 0,
-				rawNotionFilters: view.filters,
-				rawNotionSorts: view.sorts,
-				rawNotionGroupBy: view.groupBy,
 			};
 		}),
 	};
@@ -3272,46 +3230,6 @@ function parseHTMLDatabaseRows(
 		}
 	});
 	return rows;
-}
-
-// Parse a CSV cell value according to the column type
-function parseCSVCellValue(value: string, colType: string, selectValues: Set<string>) {
-	value = value.trim();
-	const normalizedValue =
-		colType === 'typesUrl' || colType === 'typesFile' ? value : stripNotionCSVLinkSuffix(value);
-	switch (colType) {
-		case 'typesTitle': {
-			return normalizedValue;
-		}
-		case 'typesCheckbox':
-			return normalizedValue.toLowerCase() === 'yes' || normalizedValue.toLowerCase() === 'true' || normalizedValue === '1';
-		case 'typesDate':
-		case 'typesCreatedTime':
-		case 'typesLastEditedTime': {
-			if (!normalizedValue) return [];
-			// Handle date ranges with arrow
-			const times = splitNotionDateRange(normalizedValue);
-			return times;
-		}
-		case 'typesSelect':
-		case 'typesStatus': {
-			if (!normalizedValue) return [];
-			selectValues.add(normalizedValue);
-			return [normalizedValue];
-		}
-		case 'typesMultipleSelect': {
-			if (!normalizedValue) return [];
-			const opts = normalizedValue.split(',').map(v => v.trim()).filter(Boolean);
-			opts.forEach(o => selectValues.add(o));
-			return opts;
-		}
-		case 'typesFile': {
-			if (!value) return [];
-			return value.split(',').map(v => v.trim()).filter(Boolean);
-		}
-		default:
-			return normalizedValue;
-	}
 }
 
 // Convert Notion databases to SiYuan AttributeView format

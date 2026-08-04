@@ -22,16 +22,6 @@ function decodeHTML(value: string) {
 		.replace(/&#(\d+);/g, (_, num) => String.fromCodePoint(parseInt(num, 10)));
 }
 
-function parseAttributes(source: string) {
-	const attrs: Record<string, string> = {};
-	const attrRegExp = /([^\s=]+)(?:="([^"]*)")?/g;
-	let match: RegExpExecArray | null;
-	while ((match = attrRegExp.exec(source)) !== null) {
-		attrs[match[1]] = decodeHTML(match[2] ?? '');
-	}
-	return attrs;
-}
-
 function cleanManifestTitle(rawTitle: string) {
 	const decoded = decodeHTML(rawTitle).trim();
 	const withoutInlineLabel = decoded.replace(/\s*\(Inline database\)\s*$/i, '');
@@ -139,90 +129,91 @@ export function parseWorkspaceManifest(indexHTML: string): WorkspaceManifest {
 	const nodesByID: Record<string, WorkspaceManifestNode> = {};
 	const orderedIDs: string[] = [];
 	const rootIDs: string[] = [];
-	const stack: string[] = [];
-	let anchorTargetID = '';
-	let anchorText = '';
 
-	const tokenRegExp = /<(\/?)(ul|a)\b([^>]*)>|([^<]+)/gi;
-	let match: RegExpExecArray | null;
-	while ((match = tokenRegExp.exec(indexHTML)) !== null) {
-		const [, isClosing, tagName, rawAttrs, textNode] = match;
+	// A DOM walk rather than a tag tokenizer: the tokenizer pushed the ancestor stack only
+	// for <ul> elements carrying a valid `id::<32hex>` but popped it on EVERY </ul>, so a
+	// single plain wrapper <ul> desynchronised the stack and silently re-parented every
+	// remaining page to its grandparent. It also leaked nested markup into titles.
+	const dom = parseHTML(indexHTML);
+	const root: Element = dom.querySelector('body') ?? dom;
 
-		if (textNode) {
-			if (anchorTargetID) {
-				anchorText += textNode;
+	const childListsOf = (element: Element): Element[] =>
+		Array.from(element.querySelectorAll('ul')).filter((ul) => ul.parentElement?.closest('ul') === element);
+
+	const directAnchorOf = (element: Element): HTMLAnchorElement | null =>
+		(Array.from(element.querySelectorAll('a')) as HTMLAnchorElement[])
+			.find((anchor) => anchor.closest('ul') === element) ?? null;
+
+	const visit = (element: Element, parentID: string | null, depth: number) => {
+		const rawID = (element.getAttribute('id') ?? '').replace(/^id::/, '');
+		const created = createManifestNode(rawID, parentID);
+
+		// An <ul> without a usable id is a layout wrapper: pass the parent through instead
+		// of breaking the chain.
+		if (!created) {
+			for (const child of childListsOf(element)) {
+				visit(child, parentID, depth);
 			}
-			continue;
+			return;
 		}
 
-		if (tagName === 'ul' && !isClosing) {
-			const attrs = parseAttributes(rawAttrs);
-			const rawID = attrs.id?.replace(/^id::/, '') ?? '';
-			const parentID = stack.length > 0 ? stack[stack.length - 1] : null;
-			const nextNode = createManifestNode(rawID, parentID);
-			if (!nextNode) {
-				continue;
-			}
-			const existingNode = nodesByID[nextNode.notionID];
-			const node = existingNode ?? nextNode;
-			if (orderedIDs.length === 0 || node.kind === 'workspace') {
-				node.kind = 'workspace';
-			}
-			if (!existingNode) {
-				nodesByID[node.notionID] = node;
-				orderedIDs.push(node.notionID);
-			}
-			node.rawID = rawID;
-			if (!node.parentID && parentID) {
-				node.parentID = parentID;
-			}
-			if (parentID && nodesByID[parentID] && !nodesByID[parentID].childIDs.includes(node.notionID)) {
+		const existingNode = nodesByID[created.notionID];
+		const node = existingNode ?? created;
+		if (!existingNode) {
+			nodesByID[node.notionID] = node;
+			orderedIDs.push(node.notionID);
+		}
+		node.rawID = rawID;
+		if (!node.parentID && parentID) {
+			node.parentID = parentID;
+		}
+		if (depth === 0) {
+			node.kind = 'workspace';
+		}
+
+		if (parentID && nodesByID[parentID]) {
+			if (!nodesByID[parentID].childIDs.includes(node.notionID)) {
 				nodesByID[parentID].childIDs.push(node.notionID);
-			} else if (node.kind !== 'workspace' && !rootIDs.includes(node.notionID)) {
-				rootIDs.push(node.notionID);
 			}
-			stack.push(node.notionID);
-			continue;
+		} else if (node.kind !== 'workspace' && !rootIDs.includes(node.notionID)) {
+			rootIDs.push(node.notionID);
 		}
 
-		if (tagName === 'ul' && isClosing) {
-			stack.pop();
-			continue;
-		}
-
-		if (tagName === 'a' && !isClosing) {
-			anchorTargetID = stack.length > 0 ? stack[stack.length - 1] : '';
-			anchorText = '';
-			if (anchorTargetID && nodesByID[anchorTargetID]) {
-				const attrs = parseAttributes(rawAttrs);
-				nodesByID[anchorTargetID].href = attrs.href ?? '';
-			}
-			continue;
-		}
-
-		if (tagName === 'a' && isClosing) {
-			if (!anchorTargetID || !nodesByID[anchorTargetID]) {
-				anchorTargetID = '';
-				anchorText = '';
-				continue;
-			}
-
-			const node = nodesByID[anchorTargetID];
-			node.title = cleanManifestTitle(anchorText);
+		const anchor = directAnchorOf(element);
+		if (anchor) {
+			node.href = anchor.getAttribute('href') ?? '';
+			node.title = cleanManifestTitle(extractAnchorDisplayTitle(anchor));
 			node.normalizedTitle = normalizeNotionLookup(node.title);
 			node.normalizedHref = normalizeNotionLookup(node.href);
 
-			const hasCSVHref = /\.csv$/i.test(node.rawID) || /\.csv$/i.test(anchorText) || /notion\.so\//i.test(node.href);
-			if (hasCSVHref && /\.csv$/i.test(node.rawID + anchorText)) {
+			const anchorText = anchor.textContent ?? '';
+			if (/\.csv(\?|$)/i.test(node.href) || /\.csv$/i.test(node.rawID)) {
 				node.kind = 'csv';
 			} else if (/inline database/i.test(anchorText)) {
 				node.kind = 'inline_database';
 			} else if (node.kind !== 'workspace') {
 				node.kind = 'page';
 			}
+		}
 
-			anchorTargetID = '';
-			anchorText = '';
+		for (const child of childListsOf(element)) {
+			visit(child, node.notionID, depth + 1);
+		}
+	};
+
+	for (const topLevel of Array.from(root.querySelectorAll('ul')).filter((ul) => !ul.parentElement?.closest('ul'))) {
+		visit(topLevel, null, 0);
+	}
+
+	// A single-page export has one <ul> and no children; treating it as the workspace
+	// hoisted its subpages to the notebook root.
+	for (const notionID of orderedIDs) {
+		const node = nodesByID[notionID];
+		if (node.kind === 'workspace' && node.childIDs.length === 0) {
+			node.kind = 'page';
+			if (!rootIDs.includes(notionID)) {
+				rootIDs.push(notionID);
+			}
 		}
 	}
 
@@ -323,8 +314,13 @@ export async function collectNotionExport(files: PickedFile[], reporter: NotionI
 			return;
 		}
 
+		// The full path is authoritative. The bare name is only a fallback, so it must not
+		// overwrite: two pages each holding an "image.png" made one render the other's asset.
 		assetEntriesByPath[normalizeNotionLookup(entry.filepath)] = entry;
-		assetEntriesByPath[normalizeNotionLookup(entry.name)] = entry;
+		const nameKey = normalizeNotionLookup(entry.name);
+		if (!(nameKey in assetEntriesByPath)) {
+			assetEntriesByPath[nameKey] = entry;
+		}
 	});
 
 	let manifest: WorkspaceManifest | undefined;

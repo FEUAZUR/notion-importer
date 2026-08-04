@@ -1,6 +1,6 @@
 [![GitHub Release](https://img.shields.io/github/v/release/FEUAZUR/notion-importer)](https://github.com/FEUAZUR/notion-importer/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![SiYuan](https://img.shields.io/badge/SiYuan-v3.0.12+-blue)](https://b3log.org/siyuan)
+[![SiYuan](https://img.shields.io/badge/SiYuan-v3.7.0+-blue)](https://b3log.org/siyuan)
 [![Downloads](https://img.shields.io/github/downloads/FEUAZUR/notion-importer/total)](https://github.com/FEUAZUR/notion-importer/releases)
 
 # Notion Importer for SiYuan
@@ -20,7 +20,9 @@ A SiYuan plugin that imports Notion HTML exports into SiYuan with deterministic 
 - Page icons (emoji and custom images) preserved
 - Document hierarchy faithfully recreated
 - Standalone images and embedded media correctly positioned
-- Real-time progress with phase indicator, live logs, and error tracking
+- Real-time progress with phase indicator, live logs, warning/error tracking, and a Cancel button
+- Never overwrites: each run creates a new notebook (`Notion`, then `Notion (2026-08-04 14h30)`)
+- Available in English, French and Simplified Chinese, on desktop and mobile
 
 ## Screenshots
 
@@ -66,13 +68,19 @@ A SiYuan plugin that imports Notion HTML exports into SiYuan with deterministic 
 
 ## Build
 
+Requires Node `^20.19 || ^22.12 || >=24` and pnpm.
+
 ```bash
-npm install
-npm test
-npm run build
+pnpm install
+pnpm run typecheck
+pnpm run check      # svelte-check
+pnpm test
+pnpm run build
 ```
 
-The built plugin will be in the `dist/` directory and packaged as `package.zip`.
+The built plugin lands in `dist/` and is packaged as `package.zip`. The build fails if any
+file SiYuan requires (`index.js`, `index.css`, `plugin.json`, `icon.png`, `preview.png`,
+`README.md`, `i18n/*.json`) is missing from the output.
 
 ## Architecture
 

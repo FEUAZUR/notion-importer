@@ -1,136 +1,119 @@
-import { resolve } from "path"
-import UnoCSS from 'unocss/vite'
-import { defineConfig, loadEnv } from "vite"
+import { fileURLToPath } from "node:url"
+import { existsSync } from "node:fs"
+import { resolve } from "node:path"
+import { defineConfig } from "vite"
 import minimist from "minimist"
 import { viteStaticCopy } from "vite-plugin-static-copy"
-import livereload from "rollup-plugin-livereload"
 import { svelte } from "@sveltejs/vite-plugin-svelte"
-import zipPack from "vite-plugin-zip-pack";
-import fg from 'fast-glob';
+import zipPack from "vite-plugin-zip-pack"
+import fg from "fast-glob"
 
-import vitePluginYamlI18n from './yaml-plugin';
+import vitePluginYamlI18n from "./yaml-plugin"
 
+const rootDir = fileURLToPath(new URL(".", import.meta.url))
 const args = minimist(process.argv.slice(2))
 const isWatch = args.watch || args.w || false
 const devDistDir = "dev"
 const distDir = isWatch ? devDistDir : "dist"
 
-console.log("isWatch=>", isWatch)
-console.log("distDir=>", distDir)
+// SiYuan refuses to install a package.zip missing any of these.
+const REQUIRED_PACKAGE_FILES = [
+    "index.js",
+    "index.css",
+    "plugin.json",
+    "icon.png",
+    "preview.png",
+    "README.md",
+    "i18n/en_US.json",
+    "i18n/zh_CN.json",
+    "i18n/fr_FR.json",
+]
+
+function assertPackageContents(dir: string) {
+    return {
+        name: "assert-package-contents",
+        closeBundle: {
+            sequential: true,
+            order: "pre" as const,
+            handler() {
+                const missing = REQUIRED_PACKAGE_FILES.filter((file) => !existsSync(resolve(rootDir, dir, file)))
+                if (missing.length) {
+                    throw new Error(`Build output "${dir}/" is missing: ${missing.join(", ")}`)
+                }
+            },
+        },
+    }
+}
 
 export default defineConfig({
     resolve: {
         alias: {
-            "@": resolve(__dirname, "src"),
-        }
+            "@": resolve(rootDir, "src"),
+        },
     },
 
     plugins: [
         svelte(),
 
-        UnoCSS(),
-
         vitePluginYamlI18n({
-            inDir: 'public/i18n',
-            outDir: `${distDir}/i18n`
+            inDir: "public/i18n",
+            outDir: `${distDir}/i18n`,
         }),
 
         viteStaticCopy({
             targets: [
-                {
-                    src: "./README*.md",
-                    dest: "./",
-                },
-                {
-                    src: "./plugin.json",
-                    dest: "./",
-                },
-                {
-                    src: "./preview.png",
-                    dest: "./",
-                },
-                {
-                    src: "./icon.png",
-                    dest: "./",
-                }
+                { src: "./README*.md", dest: "./" },
+                { src: "./plugin.json", dest: "./" },
+                { src: "./preview.png", dest: "./" },
+                { src: "./icon.png", dest: "./" },
             ],
         }),
+
+        ...(isWatch
+            ? [
+                {
+                    name: "watch-external",
+                    async buildStart() {
+                        const files = await fg(["public/i18n/**", "./README*.md", "./plugin.json"])
+                        for (const file of files) {
+                            this.addWatchFile(file)
+                        }
+                    },
+                },
+            ]
+            : [
+                // Must stay after viteStaticCopy: it copies in writeBundle, we zip in closeBundle.
+                assertPackageContents(distDir),
+                zipPack({ inDir: `./${distDir}`, outDir: "./", outFileName: "package.zip" }),
+            ]),
     ],
 
-    // https://github.com/vitejs/vite/issues/1930
-    // https://vitejs.dev/guide/env-and-mode.html#env-files
-    // https://github.com/vitejs/vite/discussions/3058#discussioncomment-2115319
-    // 在这里自定义变量
     define: {
-        "process.env.DEV_MODE": `"${isWatch}"`,
-        "process.env.NODE_ENV": JSON.stringify(process.env.NODE_ENV)
+        "process.env.DEV_MODE": JSON.stringify(String(isWatch)),
+        "process.env.NODE_ENV": JSON.stringify(process.env.NODE_ENV ?? (isWatch ? "development" : "production")),
     },
 
     publicDir: false,
 
     build: {
-        // 输出路径
         outDir: distDir,
-        emptyOutDir: false,
-
-        // 构建后是否生成 source map 文件
-        sourcemap: isWatch ? 'inline' : false,
-
-        // 设置为 false 可以禁用最小化混淆
-        // 或是用来指定是应用哪种混淆器
-        // boolean | 'terser' | 'esbuild'
-        // 不压缩，用于调试
+        emptyOutDir: !isWatch,
+        sourcemap: isWatch ? "inline" : false,
         minify: !isWatch,
 
         lib: {
-            // Could also be a dictionary or array of multiple entry points
-            entry: resolve(__dirname, "src/index.ts"),
-            // the proper extensions will be added
+            entry: resolve(rootDir, "src/index.ts"),
             fileName: "index",
+            // Replaces the old assetFileNames "style.css" rename, which broke silently
+            // whenever Rollup picked a different name and shipped the plugin with no CSS.
+            cssFileName: "index",
             formats: ["cjs"],
         },
         rollupOptions: {
-            plugins: [
-                ...(
-                    isWatch ? [
-                        livereload(devDistDir),
-                        {
-                            //监听静态资源文件
-                            name: 'watch-external',
-                            async buildStart() {
-                                const files = await fg([
-                                    'public/i18n/**',
-                                    './README*.md',
-                                    './plugin.json'
-                                ]);
-                                for (let file of files) {
-                                    this.addWatchFile(file);
-                                }
-                            }
-                        }
-                    ] : [
-                        zipPack({
-                            inDir: './dist',
-                            outDir: './',
-                            outFileName: 'package.zip'
-                        })
-                    ]
-                )
-            ],
-
-            // make sure to externalize deps that shouldn't be bundled
-            // into your library
             external: ["siyuan", "process"],
-
             output: {
                 entryFileNames: "[name].js",
-                assetFileNames: (assetInfo) => {
-                    if (assetInfo.name === "style.css") {
-                        return "index.css"
-                    }
-                    return assetInfo.name
-                },
             },
         },
-    }
+    },
 })

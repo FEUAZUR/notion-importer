@@ -1,0 +1,61 @@
+---
+addTopBarIcon: Importer depuis Notion
+commandImport: Importer depuis Notion
+dialogTitle: Importer un export Notion dans SiYuan
+
+# Phases
+phaseCollecting: Collecte des fichiers
+phaseCreating: Creation des documents
+phaseWriting: Ecriture du contenu et des medias
+phaseDone: Import termine
+
+# UI labels
+selectFile: Selectionnez votre export HTML Notion (.zip)
+dropFileHere: Deposez un fichier ZIP ici, ou cliquez pour parcourir
+importButton: Demarrer l'import
+cancelButton: Annuler l'import
+cancelling: Annulation...
+processingPrefix: "En cours :"
+
+# Log panel
+logSectionTitle: Journal d'import
+errorsSectionTitle: Erreurs
+logTruncated: "Entrees anciennes masquees ({0} au total)"
+
+# Stats
+docsImported: Documents
+attachmentsUploaded: Pieces jointes
+databasesCreated: Bases de donnees
+warningsCount: Avertissements
+errorsCount: Erreurs
+
+# Summary
+importSuccess: Import termine avec succes
+importWithWarnings: Import termine avec des avertissements
+importWithErrors: Import termine avec des erreurs
+importCancelled: Import annule
+notebookCreatedAs: "Importe dans le carnet : {0}"
+
+# Validation and guards
+pleaseSelectFile: Veuillez d'abord selectionner un fichier ZIP.
+importAlreadyRunning: Un import est deja en cours.
+encryptedNotebookUnsupported: Les carnets chiffres ne sont pas encore pris en charge. Importez dans un carnet normal.
+workspaceReadonly: Cet espace de travail est en lecture seule, ou vous n'etes pas connecte en administrateur.
+
+# Writer log messages
+logScanning: Analyse de l'export Notion...
+logManifestReady: "Manifeste pret : {0} document(s), {1} piece(s) jointe(s), {2} fichier(s) de base de donnees."
+logNotebookCreated: "Carnet cree : {0}"
+logUploadingAttachments: Envoi des pieces jointes...
+logAnalyzingDocuments: Analyse des documents pour stabiliser les bases partagees...
+logWritingDocuments: Ecriture des documents et des bases de donnees...
+logResolvingRelations: Resolution des relations entre bases...
+logCreateDocFailed: 'Echec de creation du document "{0}" : {1}'
+logUploadFailed: 'Echec de l''envoi de "{0}" : {1}'
+logAnalyzeFailed: 'Echec de l''analyse de "{0}" : {1}'
+logWriteFailed: 'Echec de l''ecriture de "{0}" : {1}'
+logDatabaseFailed: 'Echec de creation de la base "{0}" : {1}'
+logImportFinished: "Import termine : {0} documents, {1} pieces jointes, {2} bases de donnees, {3} avertissements, {4} erreurs."
+logImportCancelled: Import annule par l'utilisateur.
+logFatalError: "Erreur fatale d'import : {0}"
+logMarkdownExportDetected: Export Notion au format Markdown detecte. Veuillez re-exporter depuis Notion au format HTML.

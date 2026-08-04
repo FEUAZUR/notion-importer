@@ -7,7 +7,7 @@
  * @Description  : Kits about dialogs
  */
 import { Dialog } from "siyuan";
-import { type SvelteComponent } from "svelte";
+import { unmount } from "svelte";
 
 export const inputDialog = (args: {
     title: string, placeholder?: string, defaultText?: string,
@@ -122,18 +122,40 @@ export const confirmDialogSync = async (args: IConfirmDialogArgs) => {
 };
 
 
+type MountedComponent = Record<string, any>;
+
+/**
+ * Closing the dialog must tear the component down: Svelte 5 has no `$destroy`, and the
+ * previous version leaked the component plus its detached DOM on every open. `onDestroy`
+ * also lets the caller abort work that would otherwise keep running invisibly.
+ */
 export const svelteDialog = (args: {
-    title: string, constructor: (container: HTMLElement) => SvelteComponent,
+    title: string,
+    constructor: (container: HTMLElement) => MountedComponent,
     width?: string, height?: string,
-    callback?: () => void;
+    onDestroy?: (component: MountedComponent) => void;
 }) => {
+    let component: MountedComponent | null = null;
+
     const dialog = new Dialog({
         title: args.title,
-        content: `<div class="b3-dialog__content"/>`,
+        content: `<div class="b3-dialog__content"></div>`,
         width: args.width,
         height: args.height,
-        destroyCallback: args.callback
+        destroyCallback: () => {
+            if (!component) {
+                return;
+            }
+            const mounted = component;
+            component = null;
+            try {
+                args.onDestroy?.(mounted);
+            } finally {
+                void unmount(mounted);
+            }
+        }
     });
-    let component = args.constructor(dialog.element.querySelector(".b3-dialog__content"));
+
+    component = args.constructor(dialog.element.querySelector(".b3-dialog__content"));
     return component;
 }

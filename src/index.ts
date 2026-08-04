@@ -1,31 +1,14 @@
-import {
-    Plugin,
-    showMessage,
-    confirm,
-    Dialog,
-    Menu,
-    openTab,
-    adaptHotkey,
-    getFrontend,
-    getBackend,
-    IModel,
-    Protyle,
-    openWindow,
-    IOperation,
-    Constants,
-    openMobileFileById,
-    lockScreen,
-    ICard,
-    ICardData
-} from "siyuan";
+import { Plugin, fetchSyncPost, showMessage } from "siyuan";
+import { mount } from "svelte";
 import "@/index.scss";
 
-import ImportForm from "@/ImportForm.svelte"
-
+import ImportForm from "@/ImportForm.svelte";
 import { svelteDialog } from "./libs/dialog";
+import { setI18n, t } from "./libs/i18n";
 
 const NOTION_CARD_SELECTOR = '.protyle-wysiwyg .sb[style*="--notion-importer-block-color-"]';
 const NOTION_CARD_REF_SELECTOR = `${NOTION_CARD_SELECTOR} [data-type="block-ref"][data-subtype="d"]`;
+const BLOCK_ID_PATTERN = /^\d{14}-[a-z0-9]{7}$/;
 
 function decodeEmojiIcon(icon: string): string | null {
     if (!icon || icon.includes("/")) {
@@ -43,7 +26,7 @@ function decodeEmojiIcon(icon: string): string | null {
 }
 
 function extractIconFromIAL(ial: string): string {
-    const match = ial.match(/(?:^|\\s)icon="([^"]+)"/);
+    const match = ial.match(/(?:^|\s)icon="([^"]+)"/);
     return match?.[1] || "";
 }
 
@@ -69,41 +52,16 @@ function shouldDecorateBlockRef(ref: HTMLElement): boolean {
 }
 
 async function fetchDocIcons(ids: string[]): Promise<Map<string, string>> {
-    if (!ids.length) {
+    const safeIDs = ids.filter((id) => BLOCK_ID_PATTERN.test(id));
+    if (!safeIDs.length) {
         return new Map();
     }
 
-    const token = (window as any).siyuan?.config?.api?.token ?? "";
-    const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-    };
-    if (token) {
-        headers.Authorization = `Token ${token}`;
-    }
-
-    const quoted = ids.map((id) => `'${id}'`).join(",");
-    const stmt = `SELECT id, ial FROM blocks WHERE type = 'd' AND id IN (${quoted})`;
-
-    const postSQL = async (url: string) => {
-        const response = await fetch(url, {
-            method: "POST",
-            headers,
-            body: JSON.stringify({ stmt }),
-        });
-        if (!response.ok) {
-            throw new Error(`SQL request failed: ${response.status}`);
-        }
-        const payload = await response.json();
-        return payload?.data || [];
-    };
-
-    let rows: Array<{ id: string; ial: string }> = [];
-    try {
-        rows = await postSQL("/api/query/sql");
-    } catch {
-        rows = await postSQL("/api/sql");
-    }
-
+    const quoted = safeIDs.map((id) => `'${id}'`).join(",");
+    const response: any = await fetchSyncPost("/api/query/sql", {
+        stmt: `SELECT id, ial FROM blocks WHERE type = 'd' AND id IN (${quoted})`,
+    });
+    const rows: Array<{ id: string; ial: string }> = response?.data ?? [];
     return new Map(rows.map((row) => [row.id, extractIconFromIAL(row.ial || "")]));
 }
 
@@ -185,11 +143,13 @@ function installNotionRuntimeDecorators() {
     };
 }
 
-export default class PluginSample extends Plugin {
+export default class NotionImporterPlugin extends Plugin {
     private cleanupNotionDecorators?: () => void;
+    private openForm: { isRunning?: () => boolean; abort?: () => void } | null = null;
 
     async onload() {
-        // Custom icon for the toolbar button
+        setI18n(this.i18n as unknown as Record<string, string>);
+
         this.addIcons(`
 <symbol id="iconCYImportLine" viewBox="0 0 36 36">
   <path d="M28 4H14.87L8 10.86V15h2v-1.39h7.61V6H28v24H8a2 2 0 0 0 2 2h18a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2Zm-12 8h-6v-.32L15.7 6h.3Z" class="clr-i-outline clr-i-outline-path-1"/>
@@ -202,59 +162,42 @@ export default class PluginSample extends Plugin {
             icon: "iconCYImportLine",
             title: this.i18n.addTopBarIcon,
             position: "right",
-            callback: () => {
-                this.showDialog()
-            }
+            callback: () => this.showDialog(),
+        });
+
+        this.addCommand({
+            langKey: "commandImport",
+            callback: () => this.showDialog(),
         });
 
         this.cleanupNotionDecorators = installNotionRuntimeDecorators();
-        console.log(this.i18n.helloPlugin);
     }
 
     async onunload() {
         this.cleanupNotionDecorators?.();
-        console.log(this.i18n.byePlugin);
+        this.openForm?.abort?.();
+        this.openForm = null;
     }
 
-    async updateCards(options: ICardData) {
-        options.cards.sort((a: ICard, b: ICard) => {
-            if (a.blockID < b.blockID) {
-                return -1;
-            }
-            if (a.blockID > b.blockID) {
-                return 1;
-            }
-            return 0;
-        });
-        return options;
+    private get isMobile(): boolean {
+        return document.body.classList.contains("body--mobile");
     }
 
     private showDialog() {
-        // let dialog = new Dialog({
-        //     title: `SiYuan ${Constants.SIYUAN_VERSION}`,
-        //     content: `<div id="helloPanel" class="b3-dialog__content"></div>`,
-        //     width: this.isMobile ? "92vw" : "720px",
-        //     destroyCallback() {
-        //         // hello.$destroy();
-        //     },
-        // });
-        // new HelloExample({
-        //     target: dialog.element.querySelector("#helloPanel"),
-        //     props: {
-        //         app: this.app,
-        //     }
-        // });
-        svelteDialog({
+        if (this.openForm?.isRunning?.()) {
+            showMessage(t("importAlreadyRunning"), 3000, "error");
+            return;
+        }
+
+        this.openForm = svelteDialog({
             title: this.i18n.dialogTitle,
-            width: "800px",
-            constructor: (container: HTMLElement) => {
-                return new ImportForm({
-                    target: container,
-                    props: {
-                        pluginInstance: this,
-                    }
-                });
-            }
+            width: this.isMobile ? "92vw" : "800px",
+            constructor: (container: HTMLElement) => mount(ImportForm, { target: container }),
+            onDestroy: (component) => {
+                // Without this the import keeps running, invisibly writing into the workspace.
+                (component as { abort?: () => void }).abort?.();
+                this.openForm = null;
+            },
         });
     }
 }

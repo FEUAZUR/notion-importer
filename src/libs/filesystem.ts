@@ -1,4 +1,5 @@
 import { BlobReader, configure, ZipReader } from '@zip.js/zip.js';
+import { parseFilePath } from './path-utils.js';
 // import type * as NodeFS from 'node:fs';
 import { configureWebWorker } from './z-worker-inline.js';
 
@@ -204,31 +205,7 @@ export async function getAllFiles(files: (PickedFolder | PickedFile)[], filter?:
  * Parse a filepath to get a file's parent path, name, basename (name without extension), and extension (lowercase).
  * For example, "path/to/my/file.md" would become `{parent: "path/to/my", name: "file.md", basename: "file", extension: "md"}`
  */
-export function parseFilePath(filepath: string): { parent: string, name: string, basename: string, extension: string } {
-	let lastIndex = Math.max(filepath.lastIndexOf('/'), filepath.lastIndexOf('\\'));
-	let name = filepath;
-	let parent = '';
-	if (lastIndex >= 0) {
-		name = filepath.substring(lastIndex + 1);
-		parent = filepath.substring(0, lastIndex);
-	}
-
-	let [basename, extension] = splitext(name);
-	return { parent, name, basename, extension };
-}
-
-export function splitext(name: string) {
-	let dotIndex = name.lastIndexOf('.');
-	let basename = name;
-	let extension = '';
-	
-	if (dotIndex > 0) {
-		basename = name.substring(0, dotIndex);
-		extension = name.substring(dotIndex + 1).toLowerCase();
-	}
-	
-	return [basename, extension];
-}
+export { parseFilePath, splitext } from './path-utils.js';
 
 // class FSReader extends Reader<NodeFS.promises.FileHandle> {
 // 	fd: NodeFS.promises.FileHandle;

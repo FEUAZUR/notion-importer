@@ -20,9 +20,10 @@ export default function vitePluginYamlI18n(options = {}) {
 
     const finalOptions = { ...DefaultOptions, ...options };
 
-    return {
-        name: 'vite-plugin-yaml-i18n',
-        buildStart() {
+    // writeBundle, not buildStart: Vite clears outDir after buildStart, which silently
+    // dropped i18n/*.json from dist (and therefore from package.zip).
+    const emit = function emitI18n() {
+        {
             console.log('🌈 Parse I18n: YAML to JSON..');
             const inDir = finalOptions.inDir;
             const outDir = finalOptions.outDir
@@ -55,6 +56,15 @@ export default function vitePluginYamlI18n(options = {}) {
                     }
                 }
             }
+        }
+    };
+
+    return {
+        name: 'vite-plugin-yaml-i18n',
+        writeBundle: {
+            sequential: true,
+            order: 'pre',
+            handler: emit,
         },
     };
 }

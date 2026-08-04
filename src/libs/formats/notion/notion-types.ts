@@ -96,7 +96,15 @@ export interface ImportStats {
 	docs: number;
 	attachments: number;
 	databases: number;
+	warnings: number;
 	errors: number;
+}
+
+export type ImportOutcome = 'completed' | 'cancelled' | 'failed';
+
+export interface ImportResult extends ImportStats {
+	outcome: ImportOutcome;
+	notebookName: string;
 }
 
 export interface NotionImportReporter {
@@ -105,6 +113,15 @@ export interface NotionImportReporter {
 	updateProgress(current: number, total: number): void;
 	setCurrentItem(name: string): void;
 	updateStats(stats: ImportStats): void;
+	/** Aborted when the user cancels or closes the dialog; checked between every unit of work. */
+	signal?: AbortSignal;
+}
+
+export class ImportCancelledError extends Error {
+	constructor() {
+		super('Import cancelled');
+		this.name = 'ImportCancelledError';
+	}
 }
 
 export type NotionLink =

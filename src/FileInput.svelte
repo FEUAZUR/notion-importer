@@ -1,80 +1,74 @@
-<script>
-    export let files = [];
-    export let accept_ext = [];
-    export let disabled = false;
-    export let labelText = 'Drop ZIP file here or click to browse';
-    let dragOver = false;
-    let fileInput;
+<script lang="ts">
+    let {
+        files = $bindable<File[]>([]),
+        accept_ext = [] as string[],
+        disabled = false,
+        labelText = '',
+    } = $props();
 
-    function handleFileChange(event) {
-        files = Array.from(event.target.files);
+    let dragOver = $state(false);
+    let fileInput = $state<HTMLInputElement | null>(null);
+
+    function accepted(candidates: File[]): File[] {
+        if (!accept_ext.length) {
+            return candidates;
+        }
+        return candidates.filter((f) => accept_ext.some((ext) => f.name.toLowerCase().endsWith(ext)));
     }
 
-    function handleDrop(event) {
+    function handleFileChange(event: Event) {
+        const input = event.target as HTMLInputElement;
+        files = Array.from(input.files ?? []);
+    }
+
+    function handleDrop(event: DragEvent) {
         event.preventDefault();
         dragOver = false;
         if (disabled) return;
-        const droppedFiles = Array.from(event.dataTransfer.files);
-        // Filter by accepted extensions
-        if (accept_ext.length > 0) {
-            files = droppedFiles.filter(f => accept_ext.some(ext => f.name.toLowerCase().endsWith(ext)));
-        } else {
-            files = droppedFiles;
-        }
-        // Sync the input element
+        files = accepted(Array.from(event.dataTransfer?.files ?? []));
         if (fileInput && files.length > 0) {
             const dt = new DataTransfer();
-            files.forEach(f => dt.items.add(f));
+            files.forEach((f) => dt.items.add(f));
             fileInput.files = dt.files;
         }
     }
 
-    function handleDragOver(event) {
+    function handleDragOver(event: DragEvent) {
         event.preventDefault();
         if (!disabled) dragOver = true;
     }
 
-    function handleDragLeave() {
-        dragOver = false;
-    }
-
-    function handleClick() {
+    function openPicker() {
         if (!disabled && fileInput) fileInput.click();
     }
 
-    function formatSize(bytes) {
-        if (bytes < 1024) return bytes + ' B';
-        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-        return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    function formatSize(bytes: number): string {
+        // Intl keeps the decimal separator correct for the user's locale.
+        const nf = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
+        if (bytes < 1024) return `${nf.format(bytes)} B`;
+        if (bytes < 1024 * 1024) return `${nf.format(bytes / 1024)} KB`;
+        if (bytes < 1024 * 1024 * 1024) return `${nf.format(bytes / (1024 * 1024))} MB`;
+        return `${nf.format(bytes / (1024 * 1024 * 1024))} GB`;
     }
 </script>
 
-<!-- svelte-ignore a11y-click-events-have-key-events -->
-<div
+<button
+    type="button"
     class="file-drop-zone"
     class:drag-over={dragOver}
-    class:disabled={disabled}
     class:has-file={files.length > 0}
-    on:drop={handleDrop}
-    on:dragover={handleDragOver}
-    on:dragleave={handleDragLeave}
-    on:click={handleClick}
-    role="button"
-    tabindex="0"
+    {disabled}
+    aria-label={labelText}
+    ondrop={handleDrop}
+    ondragover={handleDragOver}
+    ondragleave={() => (dragOver = false)}
+    onclick={openPicker}
 >
-    <input
-        bind:this={fileInput}
-        type="file"
-        accept={accept_ext.join(',')}
-        on:change={handleFileChange}
-        {disabled}
-    />
-
     {#if files.length > 0}
         <div class="file-info">
-            <svg class="file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                <polyline points="14 2 14 8 20 8"/>
+            <svg class="file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
             </svg>
             <div class="file-details">
                 <span class="file-name">{files[0].name}</span>
@@ -83,53 +77,63 @@
         </div>
     {:else}
         <div class="drop-prompt">
-            <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                <polyline points="17 8 12 3 7 8"/>
-                <line x1="12" y1="3" x2="12" y2="15"/>
+            <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="17 8 12 3 7 8" />
+                <line x1="12" y1="3" x2="12" y2="15" />
             </svg>
             <span class="drop-text">{labelText}</span>
         </div>
     {/if}
-</div>
+</button>
+
+<input
+    bind:this={fileInput}
+    class="fn__none"
+    type="file"
+    tabindex="-1"
+    aria-hidden="true"
+    accept={accept_ext.join(',')}
+    onchange={handleFileChange}
+    {disabled}
+/>
 
 <style>
     .file-drop-zone {
         display: flex;
         align-items: center;
         justify-content: center;
-        border: 2px dashed var(--b3-border-color, #d1d5db);
+        width: 100%;
+        border: 2px dashed var(--b3-border-color);
         border-radius: 8px;
         padding: 24px 16px;
         cursor: pointer;
         transition: all 0.2s ease;
-        background: var(--b3-theme-background, #fff);
+        background: var(--b3-theme-background);
+        font-family: inherit;
         min-height: 80px;
     }
 
-    .file-drop-zone:hover:not(.disabled) {
-        border-color: var(--b3-theme-primary, #4285f4);
-        background: var(--b3-theme-surface, rgba(66, 133, 244, 0.04));
+    .file-drop-zone:hover:not(:disabled),
+    .file-drop-zone:focus-visible {
+        border-color: var(--b3-theme-primary);
+        background: var(--b3-theme-surface);
     }
 
     .file-drop-zone.drag-over {
-        border-color: var(--b3-theme-primary, #4285f4);
-        background: var(--b3-theme-primary-lighter, rgba(66, 133, 244, 0.08));
+        border-color: var(--b3-theme-primary);
+        background: var(--b3-theme-primary-lighter);
         border-style: solid;
     }
 
-    .file-drop-zone.disabled {
+    .file-drop-zone:disabled {
         opacity: 0.5;
         cursor: not-allowed;
     }
 
     .file-drop-zone.has-file {
         border-style: solid;
-        border-color: var(--b3-theme-primary, #4285f4);
-    }
-
-    .file-drop-zone input[type="file"] {
-        display: none;
+        border-color: var(--b3-theme-primary);
     }
 
     .drop-prompt {
@@ -137,7 +141,7 @@
         flex-direction: column;
         align-items: center;
         gap: 8px;
-        color: var(--b3-theme-on-surface, #666);
+        color: var(--b3-theme-on-surface);
     }
 
     .upload-icon {
@@ -154,13 +158,13 @@
         display: flex;
         align-items: center;
         gap: 12px;
-        color: var(--b3-theme-on-background, #333);
+        color: var(--b3-theme-on-background);
     }
 
     .file-icon {
         width: 24px;
         height: 24px;
-        color: var(--b3-theme-primary, #4285f4);
+        color: var(--b3-theme-primary);
         flex-shrink: 0;
     }
 
@@ -168,6 +172,7 @@
         display: flex;
         flex-direction: column;
         gap: 2px;
+        text-align: left;
     }
 
     .file-name {
@@ -178,6 +183,6 @@
 
     .file-size {
         font-size: 12px;
-        color: var(--b3-theme-on-surface, #888);
+        color: var(--b3-theme-on-surface);
     }
 </style>

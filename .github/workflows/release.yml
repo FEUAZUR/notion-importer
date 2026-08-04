@@ -5,31 +5,52 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
+      - uses: pnpm/action-setup@v4
         with:
-          node-version: "20"
+          version: 10
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v2
+      - uses: actions/setup-node@v4
         with:
-          version: 8
+          node-version: "20.19"
+          cache: pnpm
 
-      - name: Install dependencies
-        run: pnpm install
+      # The bazaar reads plugin.json.version; a tag/manifest mismatch means users are
+      # never offered the update.
+      - name: Check tag matches plugin.json and package.json
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PLUGIN=$(node -p "require('./plugin.json').version")
+          PKG=$(node -p "require('./package.json').version")
+          echo "tag=$TAG plugin.json=$PLUGIN package.json=$PKG"
+          test "$TAG" = "$PLUGIN" || { echo "::error::tag $TAG != plugin.json $PLUGIN"; exit 1; }
+          test "$TAG" = "$PKG" || { echo "::error::tag $TAG != package.json $PKG"; exit 1; }
 
-      - name: Build
-        run: pnpm run build
+      - run: pnpm install --frozen-lockfile
 
-      - name: Create Release
-        uses: ncipollo/release-action@v1
+      - run: pnpm run typecheck
+      - run: pnpm run check
+      - run: pnpm test
+      - run: pnpm run build
+
+      - name: Check package.zip contents
+        run: |
+          for f in index.js index.css plugin.json icon.png preview.png README.md i18n/en_US.json; do
+            unzip -l package.zip | grep -q " $f\$" || { echo "::error::package.zip is missing $f"; exit 1; }
+          done
+          unzip -l package.zip
+
+      - uses: ncipollo/release-action@v1
         with:
           artifacts: "package.zip"
+          artifactErrorsFailBuild: true
           token: ${{ secrets.GITHUB_TOKEN }}
           allowUpdates: true

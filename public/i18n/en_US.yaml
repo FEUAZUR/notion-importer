@@ -1,42 +1,61 @@
 ---
-addTopBarIcon: Import Data
-helloPlugin: siyuan-ext-importer loaded
-byePlugin: siyuan-ext-importer exited
-dialogTitle: Import Data into SiYuan
-notebook: Notebook
-pleaseSelectNotebook: Select the notebook to import into
-startCollectFilePreImport: Collecting files before import...
-startImport: Starting import...
-importFinish: Import completed.
-import: Import
+addTopBarIcon: Import from Notion
+commandImport: Import from Notion
+dialogTitle: Import Notion export into SiYuan
 
 # Phases
-phaseCollecting: Collecting files...
-phaseCreating: Creating documents...
-phaseWriting: Writing content & uploading media...
+phaseCollecting: Collecting files
+phaseCreating: Creating documents
+phaseWriting: Writing content and media
 phaseDone: Import complete
 
 # UI labels
 selectFile: Select your Notion HTML export (.zip)
-dropFileHere: Drop ZIP file here or click to browse
-noFileSelected: No file selected
+dropFileHere: Drop a ZIP file here, or click to browse
 importButton: Start Import
-importing: Importing...
-closeButton: Close
+cancelButton: Cancel import
+cancelling: Cancelling...
+processingPrefix: "Processing:"
 
 # Log panel
 logSectionTitle: Import Log
 errorsSectionTitle: Errors
+logTruncated: "Older entries hidden ({0} total)"
+
+# Stats
+docsImported: Documents
+attachmentsUploaded: Attachments
+databasesCreated: Databases
+warningsCount: Warnings
+errorsCount: Errors
 
 # Summary
-summaryTitle: Import Summary
-docsImported: Documents imported
-attachmentsUploaded: Attachments uploaded
-databasesCreated: Databases created
-errorsCount: Errors
-importSuccess: Import completed successfully!
-importWithErrors: "Import completed with errors"
+importSuccess: Import completed successfully
+importWithWarnings: Import completed with warnings
+importWithErrors: Import completed with errors
+importCancelled: Import cancelled
+notebookCreatedAs: "Imported into notebook: {0}"
 
-# Validation
+# Validation and guards
 pleaseSelectFile: Please select a ZIP file first.
-pleaseSelectNotebookFirst: Please select a notebook first.
+importAlreadyRunning: An import is already running.
+encryptedNotebookUnsupported: Encrypted notebooks are not supported yet. Import into a normal notebook instead.
+workspaceReadonly: This workspace is read-only, or you are not signed in as an administrator.
+
+# Writer log messages
+logScanning: Scanning the Notion export...
+logManifestReady: "Manifest ready: {0} document(s), {1} attachment(s), {2} database file(s)."
+logNotebookCreated: "Created notebook: {0}"
+logUploadingAttachments: Uploading attachments...
+logAnalyzingDocuments: Analyzing documents to stabilize shared databases...
+logWritingDocuments: Writing documents and databases...
+logResolvingRelations: Resolving database relations...
+logCreateDocFailed: 'Failed to create document "{0}": {1}'
+logUploadFailed: 'Failed to upload "{0}": {1}'
+logAnalyzeFailed: 'Failed to analyze "{0}": {1}'
+logWriteFailed: 'Failed to write "{0}": {1}'
+logDatabaseFailed: 'Failed to create database "{0}": {1}'
+logImportFinished: "Import finished: {0} documents, {1} attachments, {2} databases, {3} warnings, {4} errors."
+logImportCancelled: Import cancelled by user.
+logFatalError: "Fatal import error: {0}"
+logMarkdownExportDetected: Notion Markdown export detected. Please re-export from Notion as HTML instead.

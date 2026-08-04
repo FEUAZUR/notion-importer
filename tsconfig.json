@@ -5,55 +5,45 @@
         "useDefineForClassFields": true,
         "module": "ESNext",
         "lib": [
-            "ES2020",
+            "ES2022",
             "DOM",
             "DOM.Iterable"
         ],
         "skipLibCheck": true,
-        /* Bundler mode */
-        "moduleResolution": "Node",
-        // "allowImportingTsExtensions": true,
+        // "Node" (Node10) cannot read package "exports" maps, which both @zip.js/zip.js
+        // and @siyuan-community/siyuan-sdk ship exclusively. TypeScript 6 removes it.
+        "moduleResolution": "bundler",
         "allowSyntheticDefaultImports": true,
         "resolveJsonModule": true,
         "isolatedModules": true,
         "noEmit": true,
         "jsx": "preserve",
-        /* Linting */
         "strict": false,
-        "noUnusedLocals": true,
-        "noUnusedParameters": true,
+        // The siyuan package ships raw .ts (not .d.ts), so skipLibCheck does not cover it
+        // and its own unused imports fail the build. TypeScript cannot scope these two
+        // flags to our sources, so they are enabled ad hoc when hunting dead code.
+        "noUnusedLocals": false,
+        "noUnusedParameters": false,
         "noFallthroughCasesInSwitch": true,
-        /* Svelte */
-        /**
-         * Typecheck JS in `.svelte` and `.js` files by default.
-         * Disable checkJs if you'd like to use dynamic types in JS.
-         * Note that setting allowJs false does not prevent the use
-         * of JS in `.svelte` files.
-        */
         "allowJs": true,
-        "checkJs": true,
+        "checkJs": false,
         "types": [
             "node",
-            "vite/client",
-            "svelte"
+            "vite/client"
         ],
-        // "baseUrl": "./src",
         "paths": {
             "@/*": ["./src/*"],
-            "@/libs/*": ["./src/libs/*"],
+            "@/libs/*": ["./src/libs/*"]
         }
     },
     "include": [
-        "tools/**/*.ts",
         "src/**/*.ts",
         "src/**/*.d.ts",
-        "src/**/*.tsx",
-        "src/**/*.vue"
+        "src/**/*.svelte"
     ],
     "references": [
         {
             "path": "./tsconfig.node.json"
         }
-    ],
-    "root": "."
+    ]
 }
