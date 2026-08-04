@@ -10,13 +10,20 @@
     "sourceMap": false,
     "skipLibCheck": true,
     "verbatimModuleSyntax": false,
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
   "comment": "Only browser-free modules: filesystem.ts configures a zip.js worker at import time.",
   "include": [
     "tests/suite.ts",
+    "tests/columns.ts",
     "src/libs/path-utils.ts",
-    "src/libs/formats/notion/notion-utils.ts"
+    "src/libs/util.ts",
+    "src/libs/formats/notion/notion-utils.ts",
+    "src/libs/formats/notion/convert-to-md.ts",
+    "src/libs/formats/notion/database-utils.ts",
+    "src/libs/formats/notion/notion-types.ts"
   ],
   "references": []
 }

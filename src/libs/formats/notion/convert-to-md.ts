@@ -1,6 +1,6 @@
-import { parseFilePath } from '../../filesystem.js';
+import { parseFilePath } from '../../path-utils.js';
 import { HTMLElementfindAll, parseHTML, createEl, createSpan, generateSiYuanID } from '../../util.js';
-import { ZipEntryFile } from '../../zip.js';
+import type { ZipEntryFile } from '../../zip.js';
 import {
 	type InlineStyleMarker,
 	type MarkdownInfo,
@@ -32,7 +32,15 @@ import {
 } from './notion-utils.js';
 import type { ParsedNotionDate } from './notion-utils.js';
 
-let lute = (window as any).Lute.New();
+// Lazily created: instantiating at module-evaluation time made the whole module fail to
+// import whenever window.Lute was not loaded yet, and made it untestable outside a browser.
+let luteInstance: any = null;
+function getLute() {
+	if (!luteInstance) {
+		luteInstance = (globalThis as any).Lute.New();
+	}
+	return luteInstance;
+}
 
 let _currentWarnings: string[] = [];
 function addImportWarning(msg: string) {
@@ -41,7 +49,7 @@ function addImportWarning(msg: string) {
 }
 
 function htmlToMarkdown(html: string): string {
-    return lute.HTML2Md(html)
+    return getLute().HTML2Md(html)
 }
 
 // Couleurs Notion avec leurs valeurs RGBA
@@ -1653,6 +1661,63 @@ function detectColumnType(th: HTMLElement): string {
 		}
 	}
 	return 'typesText';
+}
+
+/**
+ * Infer a column type from the cells themselves.
+ *
+ * Header icons are not a reliable signal: in a real export a checkbox column carried the
+ * `barcode` icon and a relation column carried `arrow-northeast`, while the type names the
+ * old lookup expected (`number-sign`, `list-selection`, `link`, ...) never appear at all,
+ * so almost every column silently degraded to text. The markup Notion emits per cell is
+ * unambiguous, so it wins; the icon only breaks ties.
+ */
+export function detectColumnTypeFromCells(cells: HTMLElement[]): string | null {
+	let select = 0;
+	let multiSelect = 0;
+	let status = 0;
+	let checkbox = 0;
+	let relation = 0;
+	let date = 0;
+	let numeric = 0;
+	let populated = 0;
+
+	for (const cell of cells) {
+		const text = (cell.textContent ?? '').trim();
+		const chips = cell.querySelectorAll('span.selected-value').length;
+		const hasStatus = cell.querySelector('span.status-value');
+		const hasCheckbox = cell.querySelector('div.checkbox');
+		const pageLinks = Array.from(cell.querySelectorAll('a[href]'))
+			.filter((a) => /\.html(\?|#|$)/i.test(a.getAttribute('href') ?? '')).length;
+		const hasTime = cell.querySelector('time');
+
+		if (!text && !chips && !hasCheckbox && !pageLinks) {
+			continue;
+		}
+		populated += 1;
+
+		if (hasStatus) status += 1;
+		else if (chips > 1) multiSelect += 1;
+		else if (chips === 1) select += 1;
+		else if (hasCheckbox) checkbox += 1;
+		else if (pageLinks > 0) relation += 1;
+		else if (hasTime || parseNotionDate(text)) date += 1;
+		else if (parseEuropeanNumber(text)) numeric += 1;
+	}
+
+	if (!populated) {
+		return null;
+	}
+
+	// A single multi-value cell proves the column is multi-select.
+	if (status > 0) return 'typesStatus';
+	if (multiSelect > 0 && select + multiSelect === populated) return 'typesMultipleSelect';
+	if (select === populated) return 'typesSelect';
+	if (checkbox === populated) return 'typesCheckbox';
+	if (relation === populated) return 'typesRelation';
+	if (date === populated) return 'typesDate';
+	if (numeric === populated) return 'typesNumber';
+	return null;
 }
 
 // Parse a CSV string into a 2D array, handling quoted fields
@@ -3327,6 +3392,22 @@ async function getDatabases(info: NotionResolverInfo, body: HTMLElement, pageNot
 				values: [],
 			}
 		})
+		// Cell markup beats the header icon for everything except the title column, whose
+		// `font` icon and `cell-title` class are both reliable.
+		const bodyRows = Array.from(tableNode.querySelectorAll('tbody > tr')) as HTMLElement[];
+		cols.forEach((col, index) => {
+			if (col.type === 'typesTitle') {
+				return;
+			}
+			const cells = bodyRows
+				.map((row) => row.children[index] as HTMLElement | undefined)
+				.filter((cell): cell is HTMLElement => Boolean(cell));
+			const inferred = detectColumnTypeFromCells(cells);
+			if (inferred) {
+				col.type = inferred;
+			}
+		});
+
 		// Detect title column from cell-title class if SVG/img detection missed it
 		const hasTitleCol = cols.some(c => c.type === 'typesTitle');
 		if (!hasTitleCol) {
